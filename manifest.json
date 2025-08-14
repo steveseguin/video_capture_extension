@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VDO.Ninja Video Capture",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Capture videos from web pages and stream them via VDO.Ninja",
   "permissions": [
     "activeTab",
@@ -25,16 +25,29 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["sdk-loader.js", "publisher-functions.js", "bridge.js", "vdoninja-sdk.js"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "sdk-loader.js",
+        "publisher-functions.js",
+        "bridge.js",
+        "vdoninja-sdk.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "icons": {
