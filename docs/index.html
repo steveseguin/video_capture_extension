@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VDO.Ninja Video Capture Extension</title>
+    <style>
+        :root {
+            --primary: #69aadc;
+            --primary-dark: #3a80c6;
+            --bg-dark: #1e1f22;
+            --bg-darker: #121212;
+            --surface: #2e3035;
+            --text: #e8eaed;
+            --text-secondary: #b9bbbe;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text);
+            background: var(--bg-darker);
+        }
+        
+        .hero {
+            background: linear-gradient(135deg, var(--bg-dark) 0%, var(--surface) 100%);
+            padding: 80px 20px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .hero h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, var(--primary) 0%, #96c8ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .hero p {
+            font-size: 1.3em;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto 30px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .download-section {
+            background: var(--bg-dark);
+            border-radius: 12px;
+            padding: 40px;
+            margin: 40px auto;
+            text-align: center;
+            max-width: 800px;
+        }
+        
+        .download-btn {
+            display: inline-block;
+            background: var(--primary);
+            color: white;
+            padding: 15px 40px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 1.2em;
+            font-weight: 600;
+            transition: all 0.3s;
+            margin: 10px;
+        }
+        
+        .download-btn:hover {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(106, 170, 220, 0.3);
+        }
+        
+        .secondary-btn {
+            background: var(--surface);
+            color: var(--text);
+        }
+        
+        .secondary-btn:hover {
+            background: #383a40;
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin: 60px 0;
+        }
+        
+        .feature-card {
+            background: var(--bg-dark);
+            padding: 30px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.05);
+            transition: all 0.3s;
+        }
+        
+        .feature-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-5px);
+        }
+        
+        .feature-card h3 {
+            color: var(--primary);
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        
+        .feature-card p {
+            color: var(--text-secondary);
+        }
+        
+        .links-section {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 40px;
+            margin: 40px 0;
+            text-align: center;
+        }
+        
+        .links-section h2 {
+            margin-bottom: 30px;
+            color: var(--primary);
+        }
+        
+        .link-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .link-card {
+            background: var(--bg-dark);
+            padding: 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            color: var(--text);
+            transition: all 0.3s;
+            border: 1px solid transparent;
+        }
+        
+        .link-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-3px);
+        }
+        
+        .link-card h4 {
+            color: var(--primary);
+            margin-bottom: 10px;
+        }
+        
+        .link-card p {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+        }
+        
+        footer {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-secondary);
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+        
+        footer a:hover {
+            text-decoration: underline;
+        }
+        
+        .icon {
+            font-size: 2em;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <h1>🎥 VDO.Ninja Video Capture</h1>
+        <p>Stream videos from any webpage using peer-to-peer WebRTC technology</p>
+        <p style="font-size: 1em;">Powered by <a href="https://vdo.ninja" target="_blank" style="color: var(--primary); text-decoration: none;">VDO.Ninja</a> and the <a href="https://sdk.vdo.ninja" target="_blank" style="color: var(--primary); text-decoration: none;">VDO.Ninja SDK</a></p>
+    </div>
+    
+    <div class="container">
+        <div class="download-section">
+            <h2>📥 Download Extension</h2>
+            <p style="margin-bottom: 30px; color: var(--text-secondary);">Get the latest version of the VDO.Ninja Video Capture extension</p>
+            
+            <a href="https://github.com/steveseguin/video_capture_extension/releases/latest/download/vdo-ninja-capture-extension.zip" class="download-btn">
+                Download Latest Release
+            </a>
+            
+            <a href="installation.html" class="download-btn secondary-btn">
+                Installation Guide
+            </a>
+            
+            <p style="margin-top: 30px; font-size: 0.9em; color: var(--text-secondary);">
+                Or view all releases on <a href="https://github.com/steveseguin/video_capture_extension/releases" target="_blank" style="color: var(--primary);">GitHub</a>
+            </p>
+        </div>
+        
+        <div class="features">
+            <div class="feature-card">
+                <div class="icon">🎬</div>
+                <h3>Video Detection</h3>
+                <p>Automatically detects video elements on any webpage including YouTube, Twitch, Discord, and more.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="icon">📡</div>
+                <h3>P2P Streaming</h3>
+                <p>Stream directly to viewers using WebRTC peer-to-peer connections. No server processing required.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="icon">🖥️</div>
+                <h3>Tab Capture</h3>
+                <p>Capture and stream your entire browser tab with audio, perfect for presentations and tutorials.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="icon">⚙️</div>
+                <h3>Quality Settings</h3>
+                <p>Control bitrate, codec, resolution, and other streaming parameters for optimal performance.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="icon">🔒</div>
+                <h3>Privacy Focused</h3>
+                <p>All streaming is peer-to-peer. No data collection, no analytics, no server-side video processing.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="icon">🎨</div>
+                <h3>Discord Theme</h3>
+                <p>Beautiful dark theme interface that matches VDO.Ninja's aesthetic design.</p>
+            </div>
+        </div>
+        
+        <div class="links-section">
+            <h2>Resources & Links</h2>
+            <div class="link-grid">
+                <a href="installation.html" class="link-card">
+                    <h4>📚 Installation</h4>
+                    <p>Step-by-step guide to install the extension</p>
+                </a>
+                
+                <a href="privacy.html" class="link-card">
+                    <h4>🔐 Privacy Policy</h4>
+                    <p>How we protect your data</p>
+                </a>
+                
+                <a href="terms.html" class="link-card">
+                    <h4>📜 Terms of Service</h4>
+                    <p>Usage terms and conditions</p>
+                </a>
+                
+                <a href="https://github.com/steveseguin/video_capture_extension" target="_blank" class="link-card">
+                    <h4>💻 Source Code</h4>
+                    <p>View on GitHub</p>
+                </a>
+                
+                <a href="https://vdo.ninja" target="_blank" class="link-card">
+                    <h4>🌐 VDO.Ninja</h4>
+                    <p>Main streaming platform</p>
+                </a>
+                
+                <a href="https://sdk.vdo.ninja" target="_blank" class="link-card">
+                    <h4>🛠️ SDK Documentation</h4>
+                    <p>Build your own apps</p>
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <footer>
+        <p>
+            Built with the <a href="https://sdk.vdo.ninja" target="_blank">VDO.Ninja SDK</a> • 
+            <a href="https://github.com/steveseguin/video_capture_extension" target="_blank">GitHub</a> • 
+            <a href="https://vdo.ninja" target="_blank">VDO.Ninja</a>
+        </p>
+        <p style="margin-top: 20px; font-size: 0.9em;">
+            © 2024 VDO.Ninja Video Capture Extension - Open Source Software
+        </p>
+    </footer>
+</body>
+</html>

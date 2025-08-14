@@ -1,0 +1,95 @@
+name: Build and Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Get version from manifest
+      id: get_version
+      run: |
+        VERSION=$(grep '"version"' manifest.json | sed 's/.*"version": "\(.*\)".*/\1/')
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "Extension version: $VERSION"
+    
+    - name: Create extension package
+      run: |
+        # Create a clean directory for the extension
+        mkdir -p vdo-ninja-capture-extension
+        
+        # Copy all necessary files
+        cp -r background.js vdo-ninja-capture-extension/
+        cp -r bridge.js vdo-ninja-capture-extension/
+        cp -r content.css vdo-ninja-capture-extension/
+        cp -r content.js vdo-ninja-capture-extension/
+        cp -r icons vdo-ninja-capture-extension/
+        cp -r manifest.json vdo-ninja-capture-extension/
+        cp -r popup-theme.css vdo-ninja-capture-extension/
+        cp -r popup.html vdo-ninja-capture-extension/
+        cp -r popup.js vdo-ninja-capture-extension/
+        cp -r publisher-functions.js vdo-ninja-capture-extension/
+        cp -r sdk-loader.js vdo-ninja-capture-extension/
+        cp -r vdoninja-sdk.js vdo-ninja-capture-extension/
+        
+        # Create zip file
+        zip -r vdo-ninja-capture-extension-v${{ steps.get_version.outputs.VERSION }}.zip vdo-ninja-capture-extension/
+        
+        # Also create a simple named version for direct download
+        cp vdo-ninja-capture-extension-v${{ steps.get_version.outputs.VERSION }}.zip vdo-ninja-capture-extension.zip
+    
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+          ## VDO.Ninja Video Capture Extension v${{ steps.get_version.outputs.VERSION }}
+          
+          ### Installation Instructions
+          1. Download the `vdo-ninja-capture-extension.zip` file below
+          2. Extract the zip file to a folder on your computer
+          3. Open Chrome and navigate to `chrome://extensions/`
+          4. Enable "Developer mode" in the top right
+          5. Click "Load unpacked" and select the extracted folder
+          
+          ### What's New
+          - See commit history for changes
+          
+          ### Links
+          - [Documentation](https://steveseguin.github.io/video_capture_extension/)
+          - [Installation Guide](https://steveseguin.github.io/video_capture_extension/installation)
+          - [Privacy Policy](https://steveseguin.github.io/video_capture_extension/privacy)
+        draft: false
+        prerelease: false
+    
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./vdo-ninja-capture-extension.zip
+        asset_name: vdo-ninja-capture-extension.zip
+        asset_content_type: application/zip
+    
+    - name: Upload Versioned Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./vdo-ninja-capture-extension-v${{ steps.get_version.outputs.VERSION }}.zip
+        asset_name: vdo-ninja-capture-extension-v${{ steps.get_version.outputs.VERSION }}.zip
+        asset_content_type: application/zip

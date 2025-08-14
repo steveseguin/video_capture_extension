@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - VDO.Ninja Video Capture</title>
+    <style>
+        :root {
+            --primary: #69aadc;
+            --primary-dark: #3a80c6;
+            --bg-dark: #1e1f22;
+            --bg-darker: #121212;
+            --surface: #2e3035;
+            --text: #e8eaed;
+            --text-secondary: #b9bbbe;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.8;
+            color: var(--text);
+            background: var(--bg-darker);
+        }
+        
+        .header {
+            background: var(--bg-dark);
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .header h1 {
+            max-width: 1200px;
+            margin: 0 auto;
+            color: var(--primary);
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+        
+        .back-link {
+            display: inline-block;
+            color: var(--primary);
+            text-decoration: none;
+            margin-bottom: 30px;
+            transition: all 0.3s;
+        }
+        
+        .back-link:hover {
+            transform: translateX(-5px);
+        }
+        
+        .content {
+            background: var(--bg-dark);
+            border-radius: 12px;
+            padding: 40px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        
+        h2 {
+            color: var(--primary);
+            margin: 30px 0 15px;
+            font-size: 1.5em;
+        }
+        
+        h3 {
+            color: var(--text);
+            margin: 20px 0 10px;
+            font-size: 1.2em;
+        }
+        
+        p {
+            color: var(--text-secondary);
+            margin-bottom: 15px;
+        }
+        
+        ul {
+            margin: 15px 0 15px 30px;
+            color: var(--text-secondary);
+        }
+        
+        li {
+            margin-bottom: 8px;
+        }
+        
+        .highlight {
+            background: rgba(106, 170, 220, 0.1);
+            border-left: 3px solid var(--primary);
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        
+        .highlight h3 {
+            color: var(--primary);
+            margin-top: 0;
+        }
+        
+        .date {
+            color: var(--text-secondary);
+            font-style: italic;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        footer {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-secondary);
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: 60px;
+        }
+        
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+        
+        strong {
+            color: var(--text);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔐 Privacy Policy</h1>
+    </div>
+    
+    <div class="container">
+        <a href="index.html" class="back-link">← Back to Home</a>
+        
+        <div class="content">
+            <div class="highlight">
+                <h3>Our Commitment to Privacy</h3>
+                <p>The VDO.Ninja Video Capture Extension is designed with privacy as a core principle. We do not collect, store, or transmit any personal information to external servers.</p>
+            </div>
+            
+            <h2>Information Collection</h2>
+            
+            <h3>What We DON'T Collect</h3>
+            <ul>
+                <li>Personal identification information</li>
+                <li>Browsing history or habits</li>
+                <li>Video content or metadata</li>
+                <li>Analytics or usage statistics</li>
+                <li>IP addresses or location data</li>
+                <li>Any form of tracking cookies</li>
+            </ul>
+            
+            <h3>What the Extension Stores Locally</h3>
+            <p>The extension stores minimal data locally in your browser only:</p>
+            <ul>
+                <li><strong>Active stream sessions:</strong> Temporary data about your current streaming sessions (deleted when streams end)</li>
+                <li><strong>User preferences:</strong> Your quality settings (bitrate, codec, etc.)</li>
+                <li><strong>Stream metadata:</strong> Basic information like stream IDs and timestamps</li>
+            </ul>
+            <p>All this data remains on your device and is never transmitted to any external server.</p>
+            
+            <h2>How Video Streaming Works</h2>
+            
+            <h3>Peer-to-Peer Technology</h3>
+            <p>The extension uses WebRTC technology to establish direct peer-to-peer connections between you and your viewers. This means:</p>
+            <ul>
+                <li>Video streams go directly from your browser to the viewer's browser</li>
+                <li>No video content passes through VDO.Ninja servers</li>
+                <li>No recording or storage of your streams occurs</li>
+                <li>Connections are encrypted end-to-end</li>
+            </ul>
+            
+            <h3>TURN/STUN Servers</h3>
+            <p>In some network configurations, TURN or STUN servers may be used to help establish connections:</p>
+            <ul>
+                <li>These servers only relay encrypted traffic when direct P2P connection isn't possible</li>
+                <li>They cannot see or store the content of your streams</li>
+                <li>No logs are kept of relay usage</li>
+            </ul>
+            
+            <h2>Permissions Explained</h2>
+            
+            <h3>Why We Need Certain Permissions</h3>
+            <ul>
+                <li><strong>Access to all websites:</strong> To detect and capture videos from any webpage you visit</li>
+                <li><strong>Tab access:</strong> To capture your entire browser tab when you choose that option</li>
+                <li><strong>Storage:</strong> To save your preferences and active streams locally</li>
+            </ul>
+            <p>These permissions are used only for the stated functionality and only when you explicitly interact with the extension.</p>
+            
+            <h2>Third-Party Services</h2>
+            
+            <h3>VDO.Ninja</h3>
+            <p>The extension uses the open-source VDO.Ninja SDK for WebRTC functionality. VDO.Ninja:</p>
+            <ul>
+                <li>Does not collect personal information</li>
+                <li>Does not require account creation</li>
+                <li>Is open-source and privacy-focused</li>
+                <li>Only facilitates peer-to-peer connections</li>
+            </ul>
+            
+            <h2>Data Security</h2>
+            <p>Your privacy and security are protected through:</p>
+            <ul>
+                <li>End-to-end encryption of all WebRTC streams</li>
+                <li>No external data transmission except P2P video streams</li>
+                <li>Local-only storage of preferences</li>
+                <li>No user accounts or authentication required</li>
+                <li>Open-source code available for review on GitHub</li>
+            </ul>
+            
+            <h2>Your Rights</h2>
+            <p>You have complete control over your data:</p>
+            <ul>
+                <li>All local data can be cleared by removing the extension</li>
+                <li>You can stop any stream at any time</li>
+                <li>No data persistence after uninstallation</li>
+                <li>Full transparency through open-source code</li>
+            </ul>
+            
+            <h2>Children's Privacy</h2>
+            <p>This extension does not knowingly collect any information from children under 13 years of age. The extension does not collect any personal information from any users.</p>
+            
+            <h2>Changes to This Policy</h2>
+            <p>Any changes to this privacy policy will be posted on this page and reflected in the extension's version history on GitHub.</p>
+            
+            <h2>Contact Information</h2>
+            <p>For privacy concerns or questions about this policy:</p>
+            <ul>
+                <li>Open an issue on <a href="https://github.com/steveseguin/video_capture_extension/issues" target="_blank">GitHub</a></li>
+                <li>Review the source code at <a href="https://github.com/steveseguin/video_capture_extension" target="_blank">our repository</a></li>
+            </ul>
+            
+            <div class="highlight">
+                <h3>Open Source Commitment</h3>
+                <p>This extension is fully open source. You can review every line of code to verify our privacy practices. We believe transparency is the best privacy policy.</p>
+            </div>
+            
+            <p class="date">Last updated: December 2024</p>
+        </div>
+    </div>
+    
+    <footer>
+        <p>
+            <a href="index.html">Home</a> • 
+            <a href="installation.html">Installation</a> • 
+            <a href="terms.html">Terms</a> • 
+            <a href="https://github.com/steveseguin/video_capture_extension" target="_blank">GitHub</a> • 
+            <a href="https://sdk.vdo.ninja" target="_blank">VDO.Ninja SDK</a>
+        </p>
+    </footer>
+</body>
+</html>

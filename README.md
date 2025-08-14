@@ -1,58 +1,94 @@
 # VDO.Ninja Video Capture Extension
 
-A Chrome extension for capturing and streaming videos from web pages using VDO.Ninja.
+A Chrome extension for capturing videos from web pages and streaming them via VDO.Ninja's peer-to-peer WebRTC technology.
 
-## Installation
+[![Latest Release](https://img.shields.io/github/v/release/steveseguin/video_capture_extension)](https://github.com/steveseguin/video_capture_extension/releases/latest)
+[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Pending%20Review-yellow)](https://chrome.google.com/webstore/detail/hppndmepdhaplfamkeblnhpjmiigcdij)
 
-1. Open Chrome and go to `chrome://extensions/`
-2. Enable "Developer mode" in the top right
-3. Click "Load unpacked"
-4. Select the `vdo-capture-clean` folder
+## 📥 Quick Install
 
-## Usage
+### Option 1: Download Latest Release (Available Now)
+1. [Download the extension ZIP](https://github.com/steveseguin/video_capture_extension/releases/latest/download/vdo-ninja-capture-extension.zip)
+2. Extract the ZIP file
+3. Open Chrome and go to `chrome://extensions/`
+4. Enable "Developer mode"
+5. Click "Load unpacked" and select the extracted folder
 
-1. Navigate to any page with videos (YouTube, Discord, etc.)
-2. Click the extension icon in your browser toolbar
-3. The popup will show detected videos with thumbnails
+### Option 2: Chrome Web Store (Pending)
+The extension is currently under review (ID: `hppndmepdhaplfamkeblnhpjmiigcdij`)
 
-### Streaming Individual Videos
-- Click "Stream Video" to start streaming
-- The extension will generate VDO.Ninja links automatically
-- View active streams in the "Active Streams" tab
-- Click "View Links" to see the streaming URLs
+## 📚 Documentation
 
-### Tab Capture
-- Go to the "Tab Capture" tab
-- Select audio/video options
-- Click "Start Tab Capture" to stream the entire tab
-
-### Settings
-- **Room ID**: Optional room name for collaborative viewing
-- **Stream ID**: Auto-generated or custom stream identifier
-- **Server**: Choose VDO.Ninja server or custom instance
+Visit our [documentation site](https://steveseguin.github.io/video_capture_extension/) for:
+- [Installation Guide](https://steveseguin.github.io/video_capture_extension/installation.html)
+- [Privacy Policy](https://steveseguin.github.io/video_capture_extension/privacy.html)
+- [Terms of Service](https://steveseguin.github.io/video_capture_extension/terms.html)
 
 ## Features
 
-- Auto-detects videos on any webpage
-- Thumbnail previews of videos
-- Individual video streaming with audio
-- Full tab capture mode
-- Multiple concurrent streams
-- Direct VDO.Ninja integration
-- Copy-to-clipboard for sharing links
+- 🎥 **Video Detection**: Automatically detects video elements on any webpage
+- 📡 **P2P Streaming**: Stream videos directly to viewers using WebRTC
+- 🖥️ **Tab Capture**: Capture and stream entire browser tabs with audio
+- ⚙️ **Quality Settings**: Control bitrate, codec, and streaming parameters
+- 🔒 **Privacy Focused**: All streaming is peer-to-peer, no server recording
+- 🎨 **Discord Theme**: Beautiful dark UI matching VDO.Ninja's aesthetic
 
-## Troubleshooting
+## Usage
 
-If streaming doesn't start:
-1. Reload the page and try again
-2. Check browser console for errors (F12)
-3. Ensure the video is playing/loaded
-4. Try refreshing the video list
+1. Navigate to any webpage containing videos (YouTube, Twitch, etc.)
+2. Click the VDO.Ninja Video Capture extension icon
+3. Select a video from the detected videos or choose "Tab Capture"
+4. Configure quality settings if desired
+5. Click "Publish Video" to start streaming
+6. Share the generated viewer links with your audience
 
-## Technical Details
+## How It Works
 
-The extension uses:
-- Content scripts to detect and capture video elements
-- VDO.Ninja SDK for WebRTC streaming
-- Chrome Extension Manifest V3
-- Background service worker for stream management
+The extension uses the [VDO.Ninja SDK](https://sdk.vdo.ninja) to establish WebRTC peer-to-peer connections between the streamer and viewers. Video content is captured using the MediaStream API and transmitted directly between browsers without passing through any servers (except optional TURN servers for NAT traversal).
+
+## Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/steveseguin/video_capture_extension.git
+cd video_capture_extension
+
+# The extension is ready to load - no build step required
+# Open Chrome, go to chrome://extensions/, enable Developer mode
+# Click "Load unpacked" and select this directory
+```
+
+## Privacy
+
+- No personal data collection
+- No analytics or tracking
+- All video streaming is peer-to-peer
+- Settings stored locally only
+- Open source for transparency
+
+## Development
+
+The extension is built with:
+- Manifest V3 Chrome extension architecture
+- [VDO.Ninja SDK](https://sdk.vdo.ninja) for WebRTC streaming
+- Vanilla JavaScript for performance
+- Discord-inspired dark theme CSS
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit issues and pull requests.
+
+## License
+
+This project is open source and available under the MIT License.
+
+## Credits
+
+Built with the [VDO.Ninja SDK](https://sdk.vdo.ninja) by Steve Seguin.
+
+## Links
+
+- [Documentation](https://steveseguin.github.io/video_capture_extension/)
+- [Latest Release](https://github.com/steveseguin/video_capture_extension/releases/latest)
+- [VDO.Ninja](https://vdo.ninja)
+- [VDO.Ninja SDK](https://sdk.vdo.ninja)

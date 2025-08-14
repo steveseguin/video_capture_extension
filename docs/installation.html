@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Installation Guide - VDO.Ninja Video Capture</title>
+    <style>
+        :root {
+            --primary: #69aadc;
+            --primary-dark: #3a80c6;
+            --bg-dark: #1e1f22;
+            --bg-darker: #121212;
+            --surface: #2e3035;
+            --text: #e8eaed;
+            --text-secondary: #b9bbbe;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text);
+            background: var(--bg-darker);
+        }
+        
+        .header {
+            background: var(--bg-dark);
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .header h1 {
+            max-width: 1200px;
+            margin: 0 auto;
+            color: var(--primary);
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+        
+        .method-section {
+            background: var(--bg-dark);
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        
+        .method-section h2 {
+            color: var(--primary);
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .badge {
+            background: var(--primary);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: normal;
+        }
+        
+        .badge.pending {
+            background: #faa61a;
+        }
+        
+        .badge.recommended {
+            background: #43b581;
+        }
+        
+        .steps {
+            counter-reset: step-counter;
+            margin: 20px 0;
+        }
+        
+        .step {
+            background: var(--surface);
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 8px;
+            border-left: 3px solid var(--primary);
+            counter-increment: step-counter;
+            position: relative;
+            padding-left: 50px;
+        }
+        
+        .step::before {
+            content: counter(step-counter);
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--primary);
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        
+        .step h3 {
+            color: var(--text);
+            margin-bottom: 10px;
+        }
+        
+        .step p {
+            color: var(--text-secondary);
+        }
+        
+        .step code {
+            background: var(--bg-darker);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--primary);
+            font-family: 'Courier New', monospace;
+        }
+        
+        .download-btn {
+            display: inline-block;
+            background: var(--primary);
+            color: white;
+            padding: 12px 30px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s;
+            margin: 20px 0;
+        }
+        
+        .download-btn:hover {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(106, 170, 220, 0.3);
+        }
+        
+        .screenshot {
+            background: var(--bg-darker);
+            padding: 20px;
+            border-radius: 8px;
+            margin: 15px 0;
+            text-align: center;
+        }
+        
+        .screenshot img {
+            max-width: 100%;
+            border-radius: 4px;
+        }
+        
+        .note {
+            background: rgba(106, 170, 220, 0.1);
+            border: 1px solid var(--primary);
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        
+        .note strong {
+            color: var(--primary);
+        }
+        
+        .back-link {
+            display: inline-block;
+            color: var(--primary);
+            text-decoration: none;
+            margin-bottom: 30px;
+            transition: all 0.3s;
+        }
+        
+        .back-link:hover {
+            transform: translateX(-5px);
+        }
+        
+        footer {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-secondary);
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: 60px;
+        }
+        
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📚 Installation Guide</h1>
+    </div>
+    
+    <div class="container">
+        <a href="index.html" class="back-link">← Back to Home</a>
+        
+        <div class="method-section">
+            <h2>
+                Method 1: Chrome Web Store
+                <span class="badge pending">Pending Review</span>
+            </h2>
+            <p style="color: var(--text-secondary); margin-bottom: 20px;">
+                The extension is currently under review in the Chrome Web Store. Once approved, this will be the easiest installation method.
+            </p>
+            <div class="note">
+                <strong>Status:</strong> The extension (ID: hppndmepdhaplfamkeblnhpjmiigcdij) is pending review by Google. This typically takes 1-3 business days.
+            </div>
+            <p>Once approved, you'll be able to install directly from the Chrome Web Store with one click.</p>
+        </div>
+        
+        <div class="method-section">
+            <h2>
+                Method 2: Manual Installation
+                <span class="badge recommended">Available Now</span>
+            </h2>
+            <p style="color: var(--text-secondary); margin-bottom: 20px;">
+                Install the extension manually by loading it as an unpacked extension in Chrome.
+            </p>
+            
+            <div class="steps">
+                <div class="step">
+                    <h3>Download the Extension</h3>
+                    <p>Download the latest release ZIP file from GitHub.</p>
+                    <a href="https://github.com/steveseguin/video_capture_extension/releases/latest/download/vdo-ninja-capture-extension.zip" class="download-btn">
+                        Download Extension ZIP
+                    </a>
+                </div>
+                
+                <div class="step">
+                    <h3>Extract the ZIP File</h3>
+                    <p>Right-click the downloaded ZIP file and select "Extract All" (Windows) or double-click it (Mac) to extract the contents to a folder.</p>
+                    <p>Remember where you extracted it - you'll need to select this folder in Chrome.</p>
+                </div>
+                
+                <div class="step">
+                    <h3>Open Chrome Extensions Page</h3>
+                    <p>Open Google Chrome and navigate to <code>chrome://extensions/</code></p>
+                    <p>Or go to Menu (⋮) → More Tools → Extensions</p>
+                </div>
+                
+                <div class="step">
+                    <h3>Enable Developer Mode</h3>
+                    <p>Toggle the "Developer mode" switch in the top-right corner of the extensions page.</p>
+                </div>
+                
+                <div class="step">
+                    <h3>Load the Extension</h3>
+                    <p>Click the "Load unpacked" button that appears after enabling Developer mode.</p>
+                    <p>Navigate to and select the folder where you extracted the extension files.</p>
+                </div>
+                
+                <div class="step">
+                    <h3>Verify Installation</h3>
+                    <p>The VDO.Ninja Video Capture extension should now appear in your extensions list.</p>
+                    <p>You'll see the extension icon in your Chrome toolbar (you may need to click the puzzle piece icon to pin it).</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="method-section">
+            <h2>Using the Extension</h2>
+            
+            <div class="steps">
+                <div class="step">
+                    <h3>Navigate to a Video Page</h3>
+                    <p>Go to any webpage containing videos (YouTube, Twitch, Discord, etc.)</p>
+                </div>
+                
+                <div class="step">
+                    <h3>Click the Extension Icon</h3>
+                    <p>Click the VDO.Ninja Video Capture icon in your toolbar to open the popup.</p>
+                </div>
+                
+                <div class="step">
+                    <h3>Select a Video or Tab</h3>
+                    <p>Choose from detected videos or use the "Tab Capture" option to stream your entire tab.</p>
+                </div>
+                
+                <div class="step">
+                    <h3>Start Streaming</h3>
+                    <p>Click "Publish Video" to start streaming. You'll receive links that viewers can use to watch your stream.</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="method-section">
+            <h2>Troubleshooting</h2>
+            
+            <div class="note">
+                <strong>Extension not working?</strong>
+                <ul style="margin-top: 10px; margin-left: 20px;">
+                    <li>Make sure you've extracted the ZIP file completely before loading</li>
+                    <li>Refresh the page after installing the extension</li>
+                    <li>Check that Developer mode is enabled</li>
+                    <li>Try reloading the extension from the Extensions page</li>
+                </ul>
+            </div>
+            
+            <div class="note">
+                <strong>Need help?</strong>
+                <p style="margin-top: 10px;">
+                    Visit the <a href="https://github.com/steveseguin/video_capture_extension/issues" target="_blank">GitHub Issues</a> page for support or to report bugs.
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <footer>
+        <p>
+            <a href="index.html">Home</a> • 
+            <a href="privacy.html">Privacy</a> • 
+            <a href="terms.html">Terms</a> • 
+            <a href="https://github.com/steveseguin/video_capture_extension" target="_blank">GitHub</a> • 
+            <a href="https://sdk.vdo.ninja" target="_blank">VDO.Ninja SDK</a>
+        </p>
+    </footer>
+</body>
+</html>
