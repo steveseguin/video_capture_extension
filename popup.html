@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>VDO.Ninja Video Capture</title>
+    <link rel="stylesheet" href="popup-theme.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>VDO.Ninja Capture</h1>
+            <button id="refreshBtn" class="icon-btn" title="Refresh videos">↻</button>
+        </header>
+        
+        <div class="tabs">
+            <button class="tab active" data-tab="videos">Videos</button>
+            <button class="tab" data-tab="tab">Tab Capture</button>
+            <button class="tab" data-tab="active">Active Streams</button>
+        </div>
+        
+        <div class="tab-content" id="videos-tab">
+            <div id="videoList" class="video-grid">
+                <div class="loading">Scanning for videos...</div>
+            </div>
+        </div>
+        
+        <div class="tab-content" id="tab-tab" style="display:none">
+            <div class="capture-options">
+                <h3>Capture Entire Tab</h3>
+                <div class="option-group">
+                    <label>
+                        <input type="checkbox" id="captureAudio" checked>
+                        Include Audio
+                    </label>
+                    <label>
+                        <input type="checkbox" id="captureVideo" checked>
+                        Include Video
+                    </label>
+                </div>
+                <button id="captureTabBtn" class="primary-btn">
+                    Start Tab Capture
+                </button>
+            </div>
+        </div>
+        
+        <div class="tab-content" id="active-tab" style="display:none">
+            <div id="activeStreams" class="stream-list">
+                <div class="empty-state">No active streams</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="settings" id="settingsPanel">
+            <details>
+                <summary>Settings</summary>
+                <div class="settings-content">
+                    <div class="setting-item">
+                        <label for="roomId">Room ID:</label>
+                        <input type="text" id="roomId" placeholder="Optional room name">
+                    </div>
+                    <div class="setting-item">
+                        <label for="streamId">Stream ID:</label>
+                        <input type="text" id="streamId" placeholder="Auto-generated">
+                    </div>
+                    <div class="setting-item">
+                        <label for="vdoServer">Server:</label>
+                        <select id="vdoServer">
+                            <option value="vdo.ninja">vdo.ninja (default)</option>
+                            <option value="vdo.socialstream.ninja">socialstream.ninja</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                        <input type="text" id="customServer" placeholder="Custom server URL" style="display:none">
+                    </div>
+                    
+                    <div class="setting-item">
+                        <label>Quality Settings:</label>
+                        <div class="quality-options">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="sharper">
+                                <span>Enhanced sharpness (&sharper)</span>
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="proaudio">
+                                <span>Pro audio quality (&proaudio)</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="setting-item">
+                        <label for="bitrate">Bitrate (kbps):</label>
+                        <input type="number" id="bitrate" placeholder="6000" min="500" max="50000">
+                    </div>
+                    
+                    <div class="setting-item">
+                        <label for="codec">Video Codec:</label>
+                        <select id="codec">
+                            <option value="">Default</option>
+                            <option value="h264">H.264</option>
+                            <option value="vp8">VP8</option>
+                            <option value="vp9">VP9</option>
+                            <option value="av1">AV1</option>
+                            <option value="h265">H.265 (HEVC)</option>
+                        </select>
+                    </div>
+                </div>
+            </details>
+            
+            <details class="info-section">
+                <summary>ℹ️ About VDO.Ninja</summary>
+                <div class="info-content">
+                    <p><strong>🔒 Peer-to-Peer Privacy:</strong> VDO.Ninja uses direct browser-to-browser connections. Your video never goes through a server.</p>
+                    
+                    <p><strong>🏠 LAN Optimization:</strong> When viewers are on the same local network, video streams directly over LAN without using internet bandwidth.</p>
+                    
+                    <p><strong>⚡ Performance Note:</strong> Each viewer creates a separate connection. More viewers = more CPU usage on the publisher's device.</p>
+                    
+                    <p><strong>💚 Free Service:</strong> VDO.Ninja is completely free and open-source. No accounts, no limits on stream duration.</p>
+                    
+                    <p><strong>🌍 Global Reach:</strong> Works worldwide with automatic TURN relay servers for restricted networks (~10% of users).</p>
+                </div>
+            </details>
+        </div>
+        
+        <div class="footer-links">
+            <a href="https://docs.vdo.ninja/" target="_blank">📚 Docs</a>
+            <span>•</span>
+            <a href="https://discord.vdo.ninja" target="_blank">💬 Support</a>
+            <span>•</span>
+            <a href="https://docs.vdo.ninja/help/privacy-and-security-details/vdo.ninja-privacy-policy" target="_blank">🔒 Privacy</a>
+            <span>•</span>
+            <a href="https://docs.vdo.ninja/help/privacy-and-security-details/vdo.ninja-terms-of-service" target="_blank">📋 Terms</a>
+            <span>•</span>
+            <a href="https://docs.vdo.ninja/getting-started/high-quality-camera" target="_blank">⚡ Quality Tips</a>
+        </div>
+    
+    <script src="popup.js"></script>
+</body>
+</html>
