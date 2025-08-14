@@ -33,9 +33,16 @@ Visit our documentation at [extension.vdo.ninja](https://extension.vdo.ninja/) f
 - 🔒 **Privacy Focused**: All streaming is peer-to-peer, no server recording
 - 🎨 **Discord Theme**: Beautiful dark UI matching VDO.Ninja's aesthetic
 
+## Important Limitations
+
+⚠️ **DRM-Protected Content**: This extension cannot capture DRM-protected videos. Sites like Netflix, Prime Video, Disney+, and other streaming services that use DRM will result in black/blank video capture. This is a browser security limitation, not a bug.
+
+✅ **Works With**: YouTube, Discord, Twitch, Vimeo, and most non-DRM video content
+❌ **Does NOT Work With**: Netflix, Prime Video, Disney+, Hulu, and other DRM-protected streaming services
+
 ## Usage
 
-1. Navigate to any webpage containing videos (YouTube, Twitch, etc.)
+1. Navigate to any webpage containing videos (YouTube, Discord, etc.)
 2. Click the VDO.Ninja Video Capture extension icon
 3. Select a video from the detected videos or choose "Tab Capture"
 4. Configure quality settings if desired
