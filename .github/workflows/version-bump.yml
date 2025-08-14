@@ -19,7 +19,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.MY_SECRET }}
         
     - name: Get current version
       id: current_version
