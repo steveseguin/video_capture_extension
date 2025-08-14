@@ -2,7 +2,7 @@
 /**
  * VDO.Ninja SDK - OFFICIAL SDK FOR VDO.NINJA WEBSOCKET API
  * 
- * Copyright (C) 2024 Steve Seguin
+ * Copyright (C) 2025 Steve Seguin
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by

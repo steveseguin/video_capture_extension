@@ -19,10 +19,10 @@ The extension is currently under review (ID: `hppndmepdhaplfamkeblnhpjmiigcdij`)
 
 ## 📚 Documentation
 
-Visit our [documentation site](https://steveseguin.github.io/video_capture_extension/) for:
-- [Installation Guide](https://steveseguin.github.io/video_capture_extension/installation.html)
-- [Privacy Policy](https://steveseguin.github.io/video_capture_extension/privacy.html)
-- [Terms of Service](https://steveseguin.github.io/video_capture_extension/terms.html)
+Visit our documentation at [extension.vdo.ninja](https://extension.vdo.ninja/) for:
+- [Installation Guide](https://extension.vdo.ninja/installation.html)
+- [Privacy Policy](https://extension.vdo.ninja/privacy.html)
+- [Terms of Service](https://extension.vdo.ninja/terms.html)
 
 ## Features
 
