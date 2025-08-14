@@ -10,6 +10,9 @@ on:
       - '.github/**'
       - 'manifest.json'
 
+permissions:
+  contents: write
+
 jobs:
   version-bump:
     runs-on: ubuntu-latest
