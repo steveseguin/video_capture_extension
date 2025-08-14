@@ -1,0 +1,61 @@
+name: Auto Version Bump
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/**'
+      - 'manifest.json'
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Get current version
+      id: current_version
+      run: |
+        CURRENT_VERSION=$(jq -r '.version' manifest.json)
+        echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        
+    - name: Bump version
+      id: bump_version
+      run: |
+        CURRENT_VERSION="${{ steps.current_version.outputs.CURRENT_VERSION }}"
+        IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+        MAJOR="${VERSION_PARTS[0]}"
+        MINOR="${VERSION_PARTS[1]}"
+        PATCH="${VERSION_PARTS[2]}"
+        
+        # Increment patch version
+        PATCH=$((PATCH + 1))
+        
+        NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+        echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+        
+    - name: Update manifest.json
+      run: |
+        jq '.version = "${{ steps.bump_version.outputs.NEW_VERSION }}"' manifest.json > manifest.tmp.json
+        mv manifest.tmp.json manifest.json
+        
+    - name: Commit and push
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add manifest.json
+        git commit -m "Bump version to ${{ steps.bump_version.outputs.NEW_VERSION }} [skip ci]"
+        git push
+        
+    - name: Create and push tag
+      run: |
+        git tag "v${{ steps.bump_version.outputs.NEW_VERSION }}"
+        git push origin "v${{ steps.bump_version.outputs.NEW_VERSION }}"
