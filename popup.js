@@ -332,6 +332,9 @@ async function captureTab() {
         
         document.getElementById('captureTabBtn').textContent = 'Stop Tab Capture';
         document.getElementById('captureTabBtn').onclick = () => stopTabCapture();
+        
+        // Switch to active streams tab to show the links
+        document.querySelector('[data-tab="active"]').click();
     } else {
         showNotification(`Failed to capture tab: ${response.error}`, 'error');
     }

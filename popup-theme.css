@@ -296,6 +296,26 @@ header h1::before {
     background: #ec3f3f;
 }
 
+/* Large capture button styling */
+#captureTabBtn {
+    width: 100%;
+    padding: 12px 20px;
+    font-size: 16px;
+    font-weight: 600;
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    cursor: pointer;
+}
+
+#captureTabBtn::before {
+    content: '📹';
+    font-size: 18px;
+}
+
 /* Loading & Empty States */
 .loading, .empty-state {
     text-align: center;

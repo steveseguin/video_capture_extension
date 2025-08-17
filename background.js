@@ -51,18 +51,7 @@ function getVdoLinks(server, roomId, streamId, qualitySettings = {}) {
     return links;
 }
 
-async function injectSDK(tabId) {
-    try {
-        await chrome.scripting.executeScript({
-            target: { tabId: tabId },
-            files: ['inject.js']
-        });
-        return true;
-    } catch (error) {
-        console.error('Failed to inject SDK:', error);
-        return false;
-    }
-}
+// SDK injection not needed - already loaded via content scripts
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     handleMessage(request, sender).then(sendResponse);
@@ -252,58 +241,86 @@ async function stopVideoStream(request) {
 async function startTabCapture(request) {
     const { tabId, audio, video, settings } = request;
     
+    // Get tab info for title
+    const tab = await chrome.tabs.get(tabId);
+    
     try {
         const streamId = settings.streamId || generateStreamId();
         const roomId = settings.roomId || null;
         const server = settings.server || 'vdo.ninja';
         
-        const stream = await chrome.tabCapture.capture({
-            audio: audio,
-            video: video,
-            videoConstraints: {
-                mandatory: {
-                    chromeMediaSource: 'tab',
-                    maxWidth: 1920,
-                    maxHeight: 1080
+        // Get media stream ID for tab capture (Manifest V3)
+        const mediaStreamId = await new Promise((resolve, reject) => {
+            chrome.tabCapture.getMediaStreamId({
+                targetTabId: tabId
+            }, (streamId) => {
+                if (chrome.runtime.lastError) {
+                    reject(new Error(chrome.runtime.lastError.message));
+                } else {
+                    resolve(streamId);
                 }
-            }
+            });
         });
         
-        if (!stream) {
-            return { success: false, error: 'Failed to capture tab' };
+        if (!mediaStreamId) {
+            return { success: false, error: 'Failed to get media stream ID' };
         }
         
-        const injected = await injectSDK(tabId);
-        if (!injected) {
-            stream.getTracks().forEach(track => track.stop());
-            return { success: false, error: 'Failed to inject SDK' };
+        // Create offscreen document for tab capture
+        try {
+            await chrome.offscreen.createDocument({
+                url: 'offscreen.html',
+                reasons: ['USER_MEDIA'],
+                justification: 'Tab capture requires getUserMedia in offscreen document'
+            });
+            console.log('Offscreen document created');
+        } catch (e) {
+            // Document might already exist
+            console.log('Offscreen document might already exist:', e.message);
         }
         
-        const publishResult = await chrome.tabs.sendMessage(tabId, {
-            type: 'publishTabStream',
+        // Wait a moment for offscreen document to be ready
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Start tab capture in offscreen document
+        console.log('Sending tab capture request to offscreen document:', { mediaStreamId, audio, video, streamId, roomId, server, settings });
+        const captureResult = await new Promise((resolve) => {
+            chrome.runtime.sendMessage({
+                type: 'startTabCapture',
+                mediaStreamId: mediaStreamId,
+                audio: audio,
+                video: video,
+                streamId: streamId,
+                roomId: roomId,
+                server: server,
+                settings: settings
+            }, (response) => {
+                console.log('Offscreen document response:', response);
+                resolve(response);
+            });
+        });
+        
+        if (!captureResult || !captureResult.success) {
+            return { success: false, error: captureResult?.error || 'Failed to capture tab' };
+        }
+        
+        // Store the active tab capture with title and settings
+        activeTabs.set(tabId, {
+            mediaStreamId: mediaStreamId,
             streamId: streamId,
             roomId: roomId,
-            server: server
+            server: server,
+            title: tab.title || 'Tab Capture',
+            qualitySettings: settings
         });
         
-        if (publishResult && publishResult.success) {
-            activeTabs.set(tabId, {
-                stream: stream,
-                streamId: streamId,
-                roomId: roomId,
-                server: server
-            });
-            
-            return {
-                success: true,
-                streamId: streamId,
-                roomId: roomId,
-                links: getVdoLinks(server, roomId, streamId)
-            };
-        }
-        
-        stream.getTracks().forEach(track => track.stop());
-        return { success: false, error: 'Failed to publish tab stream' };
+        return {
+            success: true,
+            streamId: streamId,
+            roomId: roomId,
+            links: getVdoLinks(server, roomId, streamId, settings),
+            message: 'Tab capture started successfully'
+        };
         
     } catch (error) {
         console.error('Tab capture error:', error);
@@ -350,8 +367,9 @@ function getActiveStreams() {
             id: `tab-${tabId}`,
             type: 'tab',
             tabId: tabId,
+            title: tab.title || `Tab ${tabId}`,
             ...tab,
-            links: getVdoLinks(tab.server, tab.roomId, tab.streamId)
+            links: getVdoLinks(tab.server, tab.roomId, tab.streamId, tab.qualitySettings)
         });
     });
     

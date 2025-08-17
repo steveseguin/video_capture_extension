@@ -150,6 +150,69 @@ function stopCapture(videoId) {
     return false;
 }
 
+async function handleTabCaptureWithStreamId(request) {
+    const { mediaStreamId, streamId, roomId, server, audio, video } = request;
+    
+    try {
+        // Get the media stream using the stream ID from background script
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: audio ? {
+                mandatory: {
+                    chromeMediaSource: 'tab',
+                    chromeMediaSourceId: mediaStreamId
+                }
+            } : false,
+            video: video ? {
+                mandatory: {
+                    chromeMediaSource: 'tab',
+                    chromeMediaSourceId: mediaStreamId,
+                    maxWidth: 1920,
+                    maxHeight: 1080
+                }
+            } : false
+        });
+        
+        if (!stream) {
+            throw new Error('Failed to capture tab stream');
+        }
+        
+        // Store the stream
+        const tabCaptureId = `tab-${Date.now()}`;
+        capturedStreams.set(tabCaptureId, {
+            stream: stream,
+            streamId: streamId,
+            roomId: roomId,
+            server: server,
+            type: 'tab'
+        });
+        
+        // If VDO.Ninja SDK is available, publish the stream
+        if (typeof publishStreamToVDO === 'function') {
+            const published = await publishStreamToVDO(stream, streamId, roomId, server);
+            if (published) {
+                return { 
+                    success: true, 
+                    streamId: streamId,
+                    roomId: roomId,
+                    tabCaptureId: tabCaptureId
+                };
+            }
+        }
+        
+        return { 
+            success: true, 
+            streamId: streamId,
+            roomId: roomId,
+            tabCaptureId: tabCaptureId,
+            message: 'Tab captured successfully'
+        };
+        
+    } catch (error) {
+        console.error('Failed to capture tab:', error);
+        throw error;
+    }
+}
+
 function setupVideoObserver() {
     if (videoObserver) return;
     
@@ -185,6 +248,10 @@ function setupVideoObserver() {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     try {
         switch(request.type) {
+            case 'ping':
+                sendResponse({ success: true });
+                break;
+                
             case 'detectVideos':
                 sendResponse(detectVideos());
                 break;
@@ -198,6 +265,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'captureScreenshot':
             captureScreenshot(request.videoId).then(screenshot => {
                 sendResponse(screenshot);
+            });
+            return true;
+            
+        case 'startTabCaptureWithStreamId':
+            // Handle tab capture with stream ID for Manifest V3
+            handleTabCaptureWithStreamId(request).then(result => {
+                sendResponse(result);
+            }).catch(error => {
+                sendResponse({ success: false, error: error.message });
             });
             return true;
             
