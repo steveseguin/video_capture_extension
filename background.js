@@ -137,29 +137,7 @@ async function startVideoStream(request) {
         
         if (!checkResult.result) {
             // Inject the SDK loader
-            await chrome.scripting.executeScript({
-                target: { tabId: tabId },
-                files: ['sdk-loader.js']
-            });
-            
-            // Wait for everything to load
-            let loaded = false;
-            for (let i = 0; i < 20; i++) {
-                await new Promise(resolve => setTimeout(resolve, 250));
-                const [loadCheck] = await chrome.scripting.executeScript({
-                    target: { tabId: tabId },
-                    func: () => window.vdoFullyLoaded
-                });
-                if (loadCheck.result) {
-                    loaded = true;
-                    console.log('VDO fully loaded after', (i + 1) * 250, 'ms');
-                    break;
-                }
-            }
-            
-            if (!loaded) {
-                console.warn('VDO not fully loaded after 5 seconds, proceeding anyway');
-            }
+            console.warn('VDO not fully loaded after 5 seconds, proceeding anyway');
         }
         
         const streamId = settings.streamId || generateStreamId();
