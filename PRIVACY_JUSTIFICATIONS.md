@@ -1,20 +1,20 @@
 # Chrome Web Store Privacy Practice Justifications
 
 ## Single Purpose Description
-This extension enables users to capture and stream video content from web pages using VDO.Ninja's peer-to-peer WebRTC technology. It detects video elements on pages, allows users to stream them via P2P connections, and provides links for viewers to connect directly without any server-side video processing.
+This extension integrates with VDO.Ninja to enable peer-to-peer video streaming using WebRTC technology. It operates exclusively on VDO.Ninja domains to facilitate video streaming functionality, allowing users to establish P2P connections for video sharing without any server-side video processing.
 
 ## Permission Justifications
 
 ### activeTab
 **Justification:** Required to detect and capture video elements on the currently active tab. The extension needs to access the DOM to find video elements and create MediaStream captures when the user explicitly clicks the extension and chooses to stream a video.
 
-### Host Permissions (https://*/*, http://*/*)
-**Justification:** Necessary to inject content scripts that detect video elements across all websites. Users need to be able to capture videos from any website they visit (YouTube, Twitch, Discord, etc.). The extension only acts when the user explicitly interacts with it.
+### Host Permissions (https://vdo.ninja/*, https://*.vdo.ninja/*)
+**Justification:** Required to inject content scripts specifically on VDO.Ninja pages to enable video streaming functionality. The extension only operates within the VDO.Ninja platform, ensuring minimal permission scope and enhanced user privacy. This targeted approach limits the extension's access to only the necessary domain where the WebRTC streaming functionality is needed.
 
-### Web Accessible Resources (NOT Remote Code)
+### Content Scripts (NOT Remote Code)
 **Note:** This extension does NOT use remote code. All JavaScript files are bundled locally within the extension package.
 
-**Justification for web_accessible_resources:** Local extension files (sdk-loader.js, publisher-functions.js, bridge.js, vdoninja-sdk.js) need to be injected into the page context to establish WebRTC peer connections. These files must run in the page's JavaScript context (not the isolated extension context) to access the MediaStream API and WebRTC functionality. This is a security requirement of browsers - WebRTC cannot be initiated from the extension's isolated world.
+**Justification:** The extension uses content scripts (combined-vdo-scripts.js and content.js) that run in the isolated content script context on VDO.Ninja pages. These scripts enable WebRTC peer connections and video streaming functionality while maintaining proper security boundaries. All scripts are packaged within the extension and operate only on the specified VDO.Ninja domains.
 
 ### Scripting
 **Justification:** Required to inject content scripts that:
@@ -75,3 +75,6 @@ This extension:
 - No account creation or login required
 - Users have full control over when streaming starts/stops
 - Extension only activates upon explicit user interaction
+- Extension operates exclusively on VDO.Ninja domains (https://vdo.ninja and subdomains)
+- Minimal permission scope ensures enhanced user privacy and security
+- No tracking, analytics, or data collection outside of VDO.Ninja platform

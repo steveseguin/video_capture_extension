@@ -20,4 +20,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-EXCEPTION: The file vdoninja-sdk.js is licensed under AGPL-v3 as indicated in its header.
+EXCEPTION: The following files contain AGPL-v3 licensed code:
+- vdoninja-sdk.js - Original VDO.Ninja SDK (licensed under AGPL-v3)
+- combined-vdo-scripts.js - Contains the VDO.Ninja SDK and is therefore also subject to AGPL-v3 licensing terms
+
+The VDO.Ninja SDK portions of these files are Copyright (C) 2025 Steve Seguin and licensed under the GNU Affero General Public License version 3 (AGPL-v3). 
+
+Original SDK source: https://github.com/steveseguin/ninjasdk
+Full AGPL-v3 license text: https://www.gnu.org/licenses/agpl-3.0.html
+
+When distributing the combined-vdo-scripts.js file or any derivative works, you must comply with the AGPL-v3 license terms for the SDK portions of the code.
