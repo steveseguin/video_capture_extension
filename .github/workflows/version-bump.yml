@@ -62,3 +62,46 @@ jobs:
       run: |
         git tag "v${{ steps.bump_version.outputs.NEW_VERSION }}"
         git push origin "v${{ steps.bump_version.outputs.NEW_VERSION }}"
+        
+    - name: Create distribution package
+      run: |
+        # Create a clean distribution directory
+        mkdir -p dist
+        
+        # Copy all necessary files for the extension
+        cp -r icons dist/
+        cp -r docs dist/
+        cp manifest.json dist/
+        cp *.js dist/ 2>/dev/null || true
+        cp *.html dist/ 2>/dev/null || true
+        cp *.css dist/ 2>/dev/null || true
+        cp LICENSE dist/ 2>/dev/null || true
+        cp README.md dist/ 2>/dev/null || true
+        cp PRIVACY_JUSTIFICATIONS.md dist/ 2>/dev/null || true
+        
+        # Create the zip file
+        cd dist
+        zip -r ../vdo-ninja-capture-extension.zip *
+        cd ..
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.bump_version.outputs.NEW_VERSION }}
+        name: Release v${{ steps.bump_version.outputs.NEW_VERSION }}
+        body: |
+          ## VDO.Ninja Video Capture Extension v${{ steps.bump_version.outputs.NEW_VERSION }}
+          
+          ### Installation
+          1. Download `vdo-ninja-capture-extension.zip` below
+          2. Extract the ZIP file to a folder
+          3. Open Chrome/Edge and navigate to `chrome://extensions/`
+          4. Enable "Developer mode"
+          5. Click "Load unpacked" and select the extracted folder
+          
+          ### What's Changed
+          - See [commits](https://github.com/${{ github.repository }}/commits/v${{ steps.bump_version.outputs.NEW_VERSION }}) for details
+        files: |
+          vdo-ninja-capture-extension.zip
+        draft: false
+        prerelease: false
