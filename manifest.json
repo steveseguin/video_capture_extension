@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VDO.Ninja Video Capture",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Capture videos from web pages and stream them via VDO.Ninja",
   "permissions": [
     "activeTab",
