@@ -3,7 +3,7 @@
 A Chrome extension for capturing videos from web pages and streaming them via VDO.Ninja's peer-to-peer WebRTC technology.
 
 [![Latest Release](https://img.shields.io/github/v/release/steveseguin/video_capture_extension)](https://github.com/steveseguin/video_capture_extension/releases/latest)
-[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Pending%20Review-yellow)](https://chrome.google.com/webstore/detail/hppndmepdhaplfamkeblnhpjmiigcdij)
+[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Available-brightgreen)](https://chromewebstore.google.com/detail/vdoninja-video-capture/hppndmepdhaplfamkeblnhpjmiigcdij)
 
 ## 📥 Quick Install
 
@@ -14,8 +14,8 @@ A Chrome extension for capturing videos from web pages and streaming them via VD
 4. Enable "Developer mode"
 5. Click "Load unpacked" and select the extracted folder
 
-### Option 2: Chrome Web Store (Pending)
-The extension is currently under review (ID: `hppndmepdhaplfamkeblnhpjmiigcdij`)
+### Option 2: Chrome Web Store (Recommended)
+[Install from Chrome Web Store](https://chromewebstore.google.com/detail/vdoninja-video-capture/hppndmepdhaplfamkeblnhpjmiigcdij)
 
 ## 📚 Documentation
 
