@@ -1,5 +1,14 @@
+// Lightweight content script - minimal impact until extension is used
 let capturedStreams = new Map();
 let videoObserver = null;
+let isInitialized = false;
+
+// Only initialize when extension is actually used
+function initialize() {
+    if (isInitialized) return;
+    isInitialized = true;
+    setupVideoObserver();
+}
 
 function detectVideos() {
     const videos = document.querySelectorAll('video');
@@ -186,19 +195,7 @@ async function handleTabCaptureWithStreamId(request) {
             type: 'tab'
         });
         
-        // If VDO.Ninja SDK is available, publish the stream
-        if (typeof publishStreamToVDO === 'function') {
-            const published = await publishStreamToVDO(stream, streamId, roomId, server);
-            if (published) {
-                return { 
-                    success: true, 
-                    streamId: streamId,
-                    roomId: roomId,
-                    tabCaptureId: tabCaptureId
-                };
-            }
-        }
-        
+        // Stream captured successfully
         return { 
             success: true, 
             streamId: streamId,
@@ -253,16 +250,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 break;
                 
             case 'detectVideos':
+                initialize();  // Only initialize when first used
                 sendResponse(detectVideos());
                 break;
             
         case 'captureVideo':
+            initialize();
             captureVideo(request.videoId).then(result => {
                 sendResponse(result);
             });
             return true;
             
         case 'captureScreenshot':
+            initialize();
             captureScreenshot(request.videoId).then(screenshot => {
                 sendResponse(screenshot);
             });
@@ -295,7 +295,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             break;
             
         case 'startObserving':
-            setupVideoObserver();
+            initialize();
             sendResponse({ success: true });
             break;
             
@@ -309,7 +309,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
 });
 
-document.addEventListener('DOMContentLoaded', setupVideoObserver);
-if (document.readyState !== 'loading') {
-    setupVideoObserver();
-}
+// Don't automatically start observing - wait for extension to be used

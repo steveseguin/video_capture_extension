@@ -34,9 +34,6 @@
         "combined-vdo-scripts.js",
         "content.js"
       ],
-      "css": [
-        "content.css"
-      ],
       "run_at": "document_idle"
     }
   ],

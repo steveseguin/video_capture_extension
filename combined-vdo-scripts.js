@@ -4621,7 +4621,7 @@
     }
 
 })(typeof window !== 'undefined' ? window : global);// Publisher functions that run in page context
-console.log('Setting up VDO publisher functions...');
+// Setting up VDO publisher functions...
 
 // Wait for SDK
 let attempts = 0;
@@ -4630,14 +4630,14 @@ const checkSDK = setInterval(() => {
     
     if (typeof VDONinja !== 'undefined' || typeof VDONinjaSDK !== 'undefined') {
         clearInterval(checkSDK);
-        console.log('SDK constructors available:', {
-            VDONinja: typeof VDONinja,
-            VDONinjaSDK: typeof VDONinjaSDK
-        });
+        // console.log('SDK constructors available:', {
+        //     VDONinja: typeof VDONinja,
+        //     VDONinjaSDK: typeof VDONinjaSDK
+        // });
         setupPublisherFunctions();
     } else if (attempts > 30) {
         clearInterval(checkSDK);
-        console.error('SDK not available after 3 seconds');
+        // console.error('SDK not available after 3 seconds');
     }
 }, 100);
 
@@ -4645,7 +4645,7 @@ function setupPublisherFunctions() {
     // Create the publisher function
     window.publishVideoToVDO = async function(videoId, streamId, roomId, title) {
         try {
-            console.log('Publishing:', { videoId, streamId, roomId, title });
+            // console.log('Publishing:', { videoId, streamId, roomId, title });
             
             const video = document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
             if (!video) {
@@ -4679,16 +4679,16 @@ function setupPublisherFunctions() {
             let vdo;
             if (typeof VDONinja !== 'undefined') {
                 vdo = new VDONinja({salt: "vdo.ninja"});
-                console.log('Using VDONinja');
+                // console.log('Using VDONinja');
             } else if (typeof VDONinjaSDK !== 'undefined') {
                 vdo = new VDONinjaSDK({salt: "vdo.ninja"});
-                console.log('Using VDONinjaSDK');
+                // console.log('Using VDONinjaSDK');
             } else {
                 throw new Error('No SDK constructor');
             }
             
             // Connect to websocket first
-            console.log('Connecting to VDO.Ninja...');
+            // console.log('Connecting to VDO.Ninja...');
             await vdo.connect();
             
             // Prepare publish options
@@ -4701,14 +4701,14 @@ function setupPublisherFunctions() {
             }
             
             // Publish the stream with options
-            console.log('Publishing with options:', publishOptions);
+            // console.log('Publishing with options:', publishOptions);
             await vdo.publish(stream, publishOptions);
             
             // Store
             window.vdoPublishers = window.vdoPublishers || {};
             window.vdoPublishers[streamId] = { vdo, stream };
             
-            console.log('Published successfully');
+            // console.log('Published successfully');
             return { success: true, streamId };
             
         } catch (error) {
@@ -4741,17 +4741,17 @@ function setupPublisherFunctions() {
     };
     
     window.vdoPublisherReady = true;
-    console.log('VDO publisher functions ready!');
+    // console.log('VDO publisher functions ready!');
 }// Bridge script to communicate between extension and page context
 (function() {
     if (window.vdoBridgeInjected) return;
     window.vdoBridgeInjected = true;
     
-    console.log('VDO Bridge initializing...');
+    // console.log('VDO Bridge initializing...');
     
     // Listen for messages from the extension
     window.addEventListener('vdo-publish-request', async (event) => {
-        console.log('Bridge received publish request:', event.detail);
+        // console.log('Bridge received publish request:', event.detail);
         
         // Call the page context function if available
         if (typeof window.publishVideoToVDO === 'function') {
@@ -4776,7 +4776,7 @@ function setupPublisherFunctions() {
     
     // Listen for stop requests
     window.addEventListener('vdo-stop-request', async (event) => {
-        console.log('Bridge received stop request:', event.detail);
+        // console.log('Bridge received stop request:', event.detail);
         
         if (typeof window.stopVDOPublisher === 'function') {
             const result = await window.stopVDOPublisher(event.detail.streamId);
@@ -4791,5 +4791,5 @@ function setupPublisherFunctions() {
         }
     });
     
-    console.log('VDO Bridge ready');
+    // console.log('VDO Bridge ready');
 })();

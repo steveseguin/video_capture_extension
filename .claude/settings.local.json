@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(gh workflow run:*)",
-      "Bash(gh run list:*)"
+      "Bash(gh run list:*)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []
