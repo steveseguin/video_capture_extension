@@ -5015,7 +5015,7 @@ const checkSDK = setInterval(() => {
 
 function setupPublisherFunctions() {
     // Create the publisher function
-    window.publishVideoToVDO = async function(videoId, streamId, roomId, title, password) {
+    window.publishVideoToVDO = async function(videoId, streamId, roomId, title, password, server) {
         try {
             // console.log('Publishing:', { videoId, streamId, roomId, title });
             
@@ -5059,8 +5059,20 @@ function setupPublisherFunctions() {
                 throw new Error('No SDK constructor');
             }
             
+            // Map selected server to a WebSocket host, if provided
+            const serverStr = (server || '').toString();
+            let hostOverride = null;
+            if (serverStr.includes('apibackup.vdo.ninja')) {
+                hostOverride = 'wss://apibackup.vdo.ninja';
+            } else if (serverStr.startsWith('wss://')) {
+                hostOverride = serverStr;
+            } else if (serverStr.includes('vdo.ninja')) {
+                hostOverride = 'wss://wss.vdo.ninja';
+            }
             // Connect to websocket first with provided password (empty uses default)
-            await vdo.connect({ password: (password !== undefined ? password : undefined) });
+            const connectOpts = { password: (password !== undefined ? password : undefined) };
+            if (hostOverride) connectOpts.host = hostOverride;
+            await vdo.connect(connectOpts);
             
             // Prepare publish options
             const publishOptions = {
@@ -5233,7 +5245,8 @@ function setupPublisherFunctions() {
                 event.detail.streamId,
                 event.detail.roomId,
                 event.detail.title,
-                event.detail.password
+                event.detail.password,
+                event.detail.server
             );
             
             // Send result back

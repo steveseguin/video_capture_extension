@@ -507,12 +507,13 @@ function getSettings() {
         bitrate: document.getElementById('bitrate').value || null,
         codec: document.getElementById('codec').value || null,
         sharper: document.getElementById('sharper').checked,
-        proaudio: document.getElementById('proaudio').checked
+        proaudio: document.getElementById('proaudio').checked,
+        showlabel: document.getElementById('showlabel').checked
     };
 }
 
 function loadSettings() {
-    chrome.storage.local.get(['roomId', 'streamId', 'password', 'server'], (data) => {
+    chrome.storage.local.get(['roomId', 'streamId', 'password', 'server', 'showlabel'], (data) => {
         if (data.roomId) document.getElementById('roomId').value = data.roomId;
         if (data.streamId) document.getElementById('streamId').value = data.streamId;
         if (data.password !== undefined) document.getElementById('password').value = data.password;
@@ -525,9 +526,12 @@ function loadSettings() {
                 document.getElementById('customServer').style.display = 'block';
             }
         }
+        if (typeof data.showlabel === 'boolean') {
+            document.getElementById('showlabel').checked = data.showlabel;
+        }
     });
     
-    ['roomId', 'streamId', 'password'].forEach(id => {
+    ['roomId', 'streamId', 'password', 'showlabel'].forEach(id => {
         document.getElementById(id).addEventListener('change', saveSettings);
     });
 }

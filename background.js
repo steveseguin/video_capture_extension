@@ -10,11 +10,23 @@ function generateRoomId() {
 }
 
 function getVdoLinks(server, roomId, streamId, qualitySettings = {}) {
-    // Ensure server has proper format
-    if (!server.includes('://')) {
-        server = 'https://' + server;
+    // Determine the base viewer hostname
+    let baseUrl;
+    try {
+        const s = (server || '').toString();
+        if (s.includes('apibackup.vdo.ninja')) {
+            // When using the backup websocket server, viewer links use backup.vdo.ninja
+            baseUrl = 'https://backup.vdo.ninja';
+        } else if (s.includes('://')) {
+            baseUrl = s.replace(/\/$/, '');
+        } else if (s) {
+            baseUrl = ('https://' + s).replace(/\/$/, '');
+        } else {
+            baseUrl = 'https://vdo.ninja';
+        }
+    } catch (_) {
+        baseUrl = 'https://vdo.ninja';
     }
-    const baseUrl = server.replace(/\/$/, ''); // Remove trailing slash
     const links = [];
     
     // Build quality parameters
@@ -30,6 +42,9 @@ function getVdoLinks(server, roomId, streamId, qualitySettings = {}) {
     }
     if (qualitySettings.proaudio) {
         qualityParams += '&proaudio';
+    }
+    if (qualitySettings.showlabel) {
+        qualityParams += '&showlabel';
     }
     
     if (roomId && roomId.trim() !== '') {
@@ -164,7 +179,7 @@ function checkExistingStream(request) {
             exists: true,
             streamId: publisher.streamId,
             roomId: publisher.roomId,
-            links: getVdoLinks(publisher.server, publisher.roomId, publisher.streamId)
+            links: getVdoLinks(publisher.server, publisher.roomId, publisher.streamId, publisher.qualitySettings)
         };
     }
     
@@ -207,7 +222,7 @@ async function startVideoStream(request) {
         // Use event-based communication to call publisher functions
         const [result] = await chrome.scripting.executeScript({
             target: frameId ? { tabId: tabId, frameIds: [frameId] } : { tabId: tabId },
-            func: async (videoId, streamId, roomId, title, password) => {
+            func: async (videoId, streamId, roomId, title, password, server) => {
                 console.log('Sending publish request via events...');
                 
                 return new Promise((resolve) => {
@@ -220,7 +235,7 @@ async function startVideoStream(request) {
                     window.addEventListener('vdo-publish-response', responseHandler);
                     
                     window.dispatchEvent(new CustomEvent('vdo-publish-request', {
-                        detail: { videoId, streamId, roomId, title, password }
+                        detail: { videoId, streamId, roomId, title, password, server }
                     }));
                     
                     // Timeout after 10 seconds
@@ -230,7 +245,7 @@ async function startVideoStream(request) {
                     }, 10000);
                 });
             },
-            args: [videoId, streamId, roomId, title, settings.password || '']
+            args: [videoId, streamId, roomId, title, settings.password || '', server]
         });
         
         if (!result || !result.result || !result.result.success) {

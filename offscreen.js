@@ -61,8 +61,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 
                 // Connect to websocket
                 console.log('Connecting to VDO.Ninja WebSocket with config:', sdkConfig);
+                // Map selected server to a WebSocket host, if applicable
+                const serverStr = (server || settings?.server || '').toString();
+                let hostOverride = null;
+                if (serverStr.includes('apibackup.vdo.ninja')) {
+                    hostOverride = 'wss://apibackup.vdo.ninja';
+                } else if (serverStr.startsWith('wss://')) {
+                    hostOverride = serverStr;
+                } else if (serverStr.includes('vdo.ninja')) {
+                    hostOverride = 'wss://wss.vdo.ninja';
+                }
                 // Connect with password if provided (empty uses default)
-                await vdoPublisher.connect({ password: (settings?.password !== undefined ? settings.password : undefined) });
+                const connectOpts = { password: (settings?.password !== undefined ? settings.password : undefined) };
+                if (hostOverride) connectOpts.host = hostOverride;
+                await vdoPublisher.connect(connectOpts);
                 console.log('Connected, SDK state:', {
                     ws: vdoPublisher.ws ? 'exists' : 'missing',
                     room: vdoPublisher.room,
