@@ -1,8 +1,7 @@
-
+// VDO.Ninja SDK v1.3.8
 /**
  * VDO.Ninja SDK - OFFICIAL SDK FOR VDO.NINJA WEBSOCKET API
- * 
- * Copyright (C) 2025 Steve Seguin
+ * Copyright (C) 2025 Steve Seguin and contributors
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -257,7 +256,7 @@
 
 
 /**
- * VDO.Ninja SDK v1.0 - STILL IN DEVELOPMENT AND MAY CONTAIN BUGS
+ * VDO.Ninja SDK - STILL IN DEVELOPMENT AND MAY CONTAIN BUGS
  * 
  * This version incorporates all fixes from vdoninja-sdk-fix-final.js directly into the SDK.
  * 
@@ -328,7 +327,7 @@
          * @returns {string} Current SDK version
          */
         static get VERSION() {
-            return '1.2.0'; // Added method aliases for AI/LLM compatibility, fixed announce() documentation
+            return '1.3.8';
         }
         
         /**
@@ -456,6 +455,33 @@
         }
         
         /**
+         * Determine the effective password to use for hashing/encryption
+         * - false or null: explicitly disabled -> return null
+         * - undefined or empty string: use default "someEncryptionKey123"
+         * - otherwise: use current password string
+         * @private
+         * @returns {string|null} Effective password or null if disabled
+         */
+        _getEffectivePassword() {
+            if (this.password === false || this.password === null) {
+                return null; // explicitly disabled
+            }
+            if (this.password === undefined || this.password === "") {
+                return "someEncryptionKey123";
+            }
+            // Ensure string and trimmed
+            let pwd = this.password;
+            if (typeof pwd !== 'string') {
+                pwd = String(pwd);
+            }
+            pwd = pwd.trim();
+            if (pwd.length < 1) {
+                return "someEncryptionKey123";
+            }
+            return pwd;
+        }
+        
+        /**
          * Create a new VDONinjaSDK instance
          * @param {Object} options - Configuration options
          * @param {string} options.host - WebSocket signaling server URL (default: 'wss://wss.vdo.ninja')
@@ -471,6 +497,8 @@
          * @param {Array} options.stunServers - STUN server configuration (default: Google & VDO.Ninja STUN)
          * @param {number} options.maxReconnectAttempts - Maximum reconnection attempts (default: 5)
          * @param {number} options.reconnectDelay - Initial reconnection delay in ms (default: 1000)
+         * @param {boolean} options.autoPingViewer - Enable viewer-side auto ping (default: false)
+         * @param {number} options.autoPingInterval - Auto ping interval in ms (default: 10000)
          */
         constructor(options = {}) {
             super();
@@ -490,6 +518,37 @@
                 this.password = this._sanitizePassword(options.password);
             }
             this.debug = options.debug || false;
+            
+            // Store options that might be incorrectly set as properties by LLMs
+            this._pendingStreamID = options.streamID || null;
+            this._pendingLabel = options.label || null;
+            // Optional publisher info fields to send on DC open
+            this._pendingInfo = {};
+            if (options.label) this._pendingInfo.label = this._sanitizeLabel(options.label);
+            if (options.meta) this._pendingInfo.meta = this._sanitizeLabel(options.meta);
+            if (options.order) this._pendingInfo.order = this._sanitizeLabel(options.order);
+            if (typeof options.broadcast === 'boolean') this._pendingInfo.broadcast = !!options.broadcast;
+            if (typeof options.allowdrawing === 'boolean') this._pendingInfo.allowdrawing = !!options.allowdrawing;
+            if (typeof options.iframe === 'boolean') this._pendingInfo.iframe = !!options.iframe;
+            if (typeof options.widget === 'boolean') this._pendingInfo.widget = !!options.widget;
+            if (typeof options.allowmidi === 'boolean') this._pendingInfo.allowmidi = !!options.allowmidi;
+            if (typeof options.allowresources === 'boolean') this._pendingInfo.allowresources = !!options.allowresources;
+            if (typeof options.allowchunked === 'boolean' || typeof options.allowchunked === 'number') this._pendingInfo.allowchunked = options.allowchunked;
+            // Also accept a nested info object for convenience
+            if (options.info && typeof options.info === 'object') {
+                const inf = options.info;
+                if (inf.label) { this._pendingInfo.label = this._sanitizeLabel(inf.label); this._pendingLabel = this._pendingInfo.label; }
+                if (inf.meta) this._pendingInfo.meta = this._sanitizeLabel(inf.meta);
+                if (inf.order) this._pendingInfo.order = this._sanitizeLabel(inf.order);
+                if (typeof inf.broadcast === 'boolean') this._pendingInfo.broadcast = !!inf.broadcast;
+                if (typeof inf.allowdrawing === 'boolean') this._pendingInfo.allowdrawing = !!inf.allowdrawing;
+                if (typeof inf.iframe === 'boolean') this._pendingInfo.iframe = !!inf.iframe;
+                if (typeof inf.widget === 'boolean') this._pendingInfo.widget = !!inf.widget;
+                if (typeof inf.allowmidi === 'boolean') this._pendingInfo.allowmidi = !!inf.allowmidi;
+                if (typeof inf.allowresources === 'boolean') this._pendingInfo.allowresources = !!inf.allowresources;
+                if (typeof inf.allowchunked === 'boolean' || typeof inf.allowchunked === 'number') this._pendingInfo.allowchunked = inf.allowchunked;
+            }
+            this._pendingRoomID = options.roomid || options.roomID || null;  // Support both cases
             
             // State management
             this.state = {
@@ -556,10 +615,71 @@
             this.salt = options.salt || "vdo.ninja";
             this._saltProvidedViaOptions = !!options.salt;
             
+            // Auto-ping settings (viewer-only)
+            this.autoPingViewer = options.autoPingViewer || false;
+            this.autoPingInterval = options.autoPingInterval || 10000;
+            
             // Setup crypto utilities
             this._setupCryptoUtils();
             
             this._log('SDK initialized with host:', this.host);
+            
+            // Add property setters to help LLMs use the SDK correctly
+            this._addPropertyHelpers();
+        }
+        
+        /**
+         * Add property setters that guide users to correct usage
+         * These properties are commonly misused by LLMs trying to set them directly
+         * @private
+         */
+        _addPropertyHelpers() {
+            // Define property descriptors for commonly misused properties
+            Object.defineProperty(this, 'streamID', {
+                get: function() {
+                    return this.state.streamID;
+                },
+                set: function(value) {
+                    console.warn(`[VDONinja SDK] Setting streamID as a property is not recommended.\n` +
+                        `Please use the streamID option in publish() or announce() methods:\n` +
+                        `  await vdo.publish(stream, { streamID: '${value}' })\n` +
+                        `  await vdo.announce({ streamID: '${value}' })\n` +
+                        `The streamID has been stored and will be used if not specified in the method call.`);
+                    this._pendingStreamID = value;
+                },
+                configurable: true
+            });
+            
+            Object.defineProperty(this, 'roomid', {
+                get: function() {
+                    return this.room;
+                },
+                set: function(value) {
+                    console.warn(`[VDONinja SDK] Setting roomid as a property is not recommended.\n` +
+                        `Please use the room option in connect() or joinRoom() methods:\n` +
+                        `  await vdo.connect({ room: '${value}' })\n` +
+                        `  await vdo.joinRoom({ room: '${value}' })\n` +
+                        `The room has been stored and will be used if not specified in the method call.`);
+                    this._pendingRoomID = value;
+                    this.room = this._sanitizeRoomName(value);
+                },
+                configurable: true
+            });
+            
+            Object.defineProperty(this, 'label', {
+                get: function() {
+                    return this._pendingLabel;
+                },
+                set: function(value) {
+                    console.warn(`[VDONinja SDK] Setting label as a property is not recommended.\n` +
+                        `Please use the label option in publish() or announce() methods:\n` +
+                        `  await vdo.publish(stream, { label: '${value}' })\n` +
+                        `  await vdo.announce({ label: '${value}' })\n` +
+                        `The label has been stored and will be used if not specified in the method call.`);
+                    this._pendingLabel = value;
+                },
+                configurable: true
+            });
         }
 
         // ============================================================================
@@ -593,8 +713,18 @@
             
             // Merge options
             if (options.host) this.host = options.host;
-            if (options.room) this.room = options.room;
-            if (options.password !== undefined) this.password = options.password;
+            if (options.room) this.room = this._sanitizeRoomName(options.room);
+            else if (this._pendingRoomID) this.room = this._sanitizeRoomName(this._pendingRoomID);
+            // Sanitize and apply password only if explicitly provided
+            if (options.password !== undefined) {
+                if (options.password === false) {
+                    this.password = false;
+                } else if (options.password === null || options.password === '') {
+                    this.password = this._sanitizePassword("someEncryptionKey123");
+                } else {
+                    this.password = this._sanitizePassword(options.password);
+                }
+            }
             
             return new Promise((resolve, reject) => {
                 try {
@@ -890,8 +1020,9 @@
 
             // Hash room name if password is not explicitly false
             let hashedRoom = room;
-            if (this.password !== false && this.password !== null) {
-                hashedRoom = await this._hashRoom(room, this.password);
+            const __effectivePasswordForRoom = this._getEffectivePassword();
+            if (__effectivePasswordForRoom !== null) {
+                hashedRoom = await this._hashRoom(room, __effectivePasswordForRoom);
             }
 
             this._log('Joining room:', room, 'with hash:', hashedRoom);
@@ -974,7 +1105,36 @@
             }
 
             this.localStream = stream;
-            const streamID = this._sanitizeStreamID(options.streamID) || this._generateStreamID();
+            // Use provided streamID, fall back to pending value from constructor/property, then generate
+            const streamID = this._sanitizeStreamID(options.streamID || this._pendingStreamID) || this._generateStreamID();
+
+            // Persist label if provided for downstream DC open
+            if (options.label) this._pendingLabel = this._sanitizeLabel(options.label);
+            // Capture optional info fields for publisher
+            this._pendingInfo = this._pendingInfo || {};
+            if (options.label) this._pendingInfo.label = this._sanitizeLabel(options.label);
+            if (options.meta) this._pendingInfo.meta = this._sanitizeLabel(options.meta);
+            if (options.order) this._pendingInfo.order = this._sanitizeLabel(options.order);
+            if (typeof options.broadcast === 'boolean') this._pendingInfo.broadcast = !!options.broadcast;
+            if (typeof options.allowdrawing === 'boolean') this._pendingInfo.allowdrawing = !!options.allowdrawing;
+            if (typeof options.iframe === 'boolean') this._pendingInfo.iframe = !!options.iframe;
+            if (typeof options.widget === 'boolean') this._pendingInfo.widget = !!options.widget;
+            if (typeof options.allowmidi === 'boolean') this._pendingInfo.allowmidi = !!options.allowmidi;
+            if (typeof options.allowresources === 'boolean') this._pendingInfo.allowresources = !!options.allowresources;
+            if (typeof options.allowchunked === 'boolean' || typeof options.allowchunked === 'number') this._pendingInfo.allowchunked = options.allowchunked;
+            if (options.info && typeof options.info === 'object') {
+                const inf = options.info;
+                if (inf.label) { this._pendingInfo.label = this._sanitizeLabel(inf.label); this._pendingLabel = this._pendingInfo.label; }
+                if (inf.meta) this._pendingInfo.meta = this._sanitizeLabel(inf.meta);
+                if (inf.order) this._pendingInfo.order = this._sanitizeLabel(inf.order);
+                if (typeof inf.broadcast === 'boolean') this._pendingInfo.broadcast = !!inf.broadcast;
+                if (typeof inf.allowdrawing === 'boolean') this._pendingInfo.allowdrawing = !!inf.allowdrawing;
+                if (typeof inf.iframe === 'boolean') this._pendingInfo.iframe = !!inf.iframe;
+                if (typeof inf.widget === 'boolean') this._pendingInfo.widget = !!inf.widget;
+                if (typeof inf.allowmidi === 'boolean') this._pendingInfo.allowmidi = !!inf.allowmidi;
+                if (typeof inf.allowresources === 'boolean') this._pendingInfo.allowresources = !!inf.allowresources;
+                if (typeof inf.allowchunked === 'boolean' || typeof inf.allowchunked === 'number') this._pendingInfo.allowchunked = inf.allowchunked;
+            }
 
             // Handle room join if needed
             if (!this.state.roomJoined && options.room) {
@@ -986,10 +1146,11 @@
 
             // Generate hashed streamID
             let hashedStreamID = streamID;
-            if (this.password !== false && this.password !== null) {
-                // Use default password if empty string
-                const effectivePassword = (this.password === '' || this.password === undefined) ? "someEncryptionKey123" : this.password;
-                hashedStreamID = await this._hashStreamID(streamID, effectivePassword);
+            {
+                const __effectivePassword = this._getEffectivePassword();
+                if (__effectivePassword !== null) {
+                    hashedStreamID = await this._hashStreamID(streamID, __effectivePassword);
+                }
             }
 
             this._log('Publishing with streamID:', streamID, 'as:', hashedStreamID);
@@ -1038,7 +1199,35 @@
                 throw new Error('Not connected to signaling server');
             }
 
-            const streamID = this._sanitizeStreamID(options.streamID) || this._generateStreamID();
+            // Persist label if provided for downstream DC open
+            if (options.label) this._pendingLabel = this._sanitizeLabel(options.label);
+            this._pendingInfo = this._pendingInfo || {};
+            if (options.label) this._pendingInfo.label = this._sanitizeLabel(options.label);
+            if (options.meta) this._pendingInfo.meta = this._sanitizeLabel(options.meta);
+            if (options.order) this._pendingInfo.order = this._sanitizeLabel(options.order);
+            if (typeof options.broadcast === 'boolean') this._pendingInfo.broadcast = !!options.broadcast;
+            if (typeof options.allowdrawing === 'boolean') this._pendingInfo.allowdrawing = !!options.allowdrawing;
+            if (typeof options.iframe === 'boolean') this._pendingInfo.iframe = !!options.iframe;
+            if (typeof options.widget === 'boolean') this._pendingInfo.widget = !!options.widget;
+            if (typeof options.allowmidi === 'boolean') this._pendingInfo.allowmidi = !!options.allowmidi;
+            if (typeof options.allowresources === 'boolean') this._pendingInfo.allowresources = !!options.allowresources;
+            if (typeof options.allowchunked === 'boolean' || typeof options.allowchunked === 'number') this._pendingInfo.allowchunked = options.allowchunked;
+            if (options.info && typeof options.info === 'object') {
+                const inf = options.info;
+                if (inf.label) { this._pendingInfo.label = this._sanitizeLabel(inf.label); this._pendingLabel = this._pendingInfo.label; }
+                if (inf.meta) this._pendingInfo.meta = this._sanitizeLabel(inf.meta);
+                if (inf.order) this._pendingInfo.order = this._sanitizeLabel(inf.order);
+                if (typeof inf.broadcast === 'boolean') this._pendingInfo.broadcast = !!inf.broadcast;
+                if (typeof inf.allowdrawing === 'boolean') this._pendingInfo.allowdrawing = !!inf.allowdrawing;
+                if (typeof inf.iframe === 'boolean') this._pendingInfo.iframe = !!inf.iframe;
+                if (typeof inf.widget === 'boolean') this._pendingInfo.widget = !!inf.widget;
+                if (typeof inf.allowmidi === 'boolean') this._pendingInfo.allowmidi = !!inf.allowmidi;
+                if (typeof inf.allowresources === 'boolean') this._pendingInfo.allowresources = !!inf.allowresources;
+                if (typeof inf.allowchunked === 'boolean' || typeof inf.allowchunked === 'number') this._pendingInfo.allowchunked = inf.allowchunked;
+            }
+
+            // Use provided streamID, fall back to pending value from constructor/property, then generate
+            const streamID = this._sanitizeStreamID(options.streamID || this._pendingStreamID) || this._generateStreamID();
 
             // Handle room join if needed
             if (!this.state.roomJoined && options.room) {
@@ -1050,10 +1239,11 @@
 
             // Generate hashed streamID
             let hashedStreamID = streamID;
-            if (this.password !== false && this.password !== null) {
-                // Use default password if empty string
-                const effectivePassword = (this.password === '' || this.password === undefined) ? "someEncryptionKey123" : this.password;
-                hashedStreamID = await this._hashStreamID(streamID, effectivePassword);
+            {
+                const __effectivePassword = this._getEffectivePassword();
+                if (__effectivePassword !== null) {
+                    hashedStreamID = await this._hashStreamID(streamID, __effectivePassword);
+                }
             }
 
             this._log('Announcing availability with streamID:', streamID, 'as:', hashedStreamID);
@@ -1097,7 +1287,7 @@
                     connection.dataChannel.readyState === 'open') {
                     try {
                         const byeMsg = { bye: true };
-                        this._sendDataInternal(byeMsg, uuid);
+                        this._sendDataInternal(byeMsg, uuid, null, 'publisher');
                         this._log('Sent bye message to viewer:', uuid);
                         
                         // Create a promise that resolves when bufferedAmount reaches 0
@@ -1197,10 +1387,11 @@
             try {
                 // Hash the streamID if password is set
                 let hashedStreamID = streamID;
-                if (this.password !== false && this.password !== null) {
-                    // Use default password if empty string
-                    const effectivePassword = (this.password === '' || this.password === undefined) ? "someEncryptionKey123" : this.password;
-                    hashedStreamID = await this._hashStreamID(streamID, effectivePassword);
+                {
+                    const __effectivePassword = this._getEffectivePassword();
+                    if (__effectivePassword !== null) {
+                        hashedStreamID = await this._hashStreamID(streamID, __effectivePassword);
+                    }
                 }
                 
                 // Track pending view so we know we initiated this
@@ -1479,7 +1670,7 @@
 
             // Setup data channel for publishers
             if (type === 'publisher') {
-                const dc = connection.pc.createDataChannel('vdoninja', { 
+                const dc = connection.pc.createDataChannel('sendChannel', { 
                     ordered: true 
                 });
                 connection.dataChannel = dc;
@@ -1572,17 +1763,36 @@
                 // Send track preferences for viewers
                 if (connection.type === 'viewer' && connection.viewPreferences) {
                     try {
-                        this._sendDataInternal(connection.viewPreferences, connection.uuid);
+                        this._sendDataInternal(connection.viewPreferences, connection.uuid, null, 'publisher');
                         this._log('Sent track preferences:', connection.viewPreferences);
                     } catch (error) {
                         this._log('Failed to send preferences:', error.message);
                     }
                 }
-                
-                // Start ping monitoring for publisher connections
+
+                // Send publisher info (label, meta, etc) to viewer when DC opens
                 if (connection.type === 'publisher') {
-                    this._startPingMonitoring(connection);
+                    try {
+                        // Merge connection.info and _pendingInfo to build outbound info payload
+                        const infoCombined = Object.assign({}, this._pendingInfo || {}, connection.info || {});
+                        // Sanitize string fields
+                        if (infoCombined.label) infoCombined.label = this._sanitizeLabel(infoCombined.label);
+                        if (infoCombined.meta) infoCombined.meta = this._sanitizeLabel(infoCombined.meta);
+                        if (infoCombined.order) infoCombined.order = this._sanitizeLabel(infoCombined.order);
+
+                        if (Object.keys(infoCombined).length > 0) {
+                            const infoMsg = { info: infoCombined };
+                            this._logMessage('OUT', infoMsg, 'DataChannel');
+                            channel.send(JSON.stringify(infoMsg));
+                            this._log('Sent publisher info to viewer:', infoCombined);
+                        }
+                    } catch (e) {
+                        this._log('Failed to send publisher info:', e.message || e);
+                    }
                 }
+                
+                // Start ping monitoring based on role/flags
+                this._startPingMonitoring(connection);
                 
                 this._emit('dataChannelOpen', {
                     uuid: connection.uuid,
@@ -1668,34 +1878,35 @@
                         if (this.localStream && this._updateTracksForConnection) {
                             await this._updateTracksForConnection(connection);
                         }
+                    } else if (msg.info && typeof msg.info === 'object') {
+                        // Update connection info (e.g., label) and emit event
+                        connection.info = Object.assign(connection.info || {}, msg.info);
+                        this._emit('peerInfo', {
+                            uuid: connection.uuid,
+                            streamID: connection.streamID,
+                            info: connection.info
+                        });
                     } else if (msg.ping) {
-                        // Viewers respond to publisher pings with pong
-                        if (connection.type === 'viewer') {
-                            try {
-                                this._sendDataInternal({ pong: msg.ping }, connection.uuid);
-                                this._log('Sent pong response to publisher');
-                            } catch (error) {
-                                this._log('Failed to send pong:', error.message);
-                            }
+                        // Respond to ping regardless of role, matching reference behavior
+                        try {
+                            this._sendDataInternal({ pong: msg.ping }, connection.uuid, null, 'any');
+                            this._log('Sent pong response');
+                        } catch (error) {
+                            this._log('Failed to send pong:', error.message);
                         }
                     } else if (msg.pong) {
-                        // Publishers receive pong responses from viewers
-                        if (connection.type === 'publisher') {
-                            const latency = Date.now() - msg.pong;
-                            
-                            // Clear pending ping and reset missed counter
-                            if (connection.pendingPing === msg.pong) {
-                                connection.pendingPing = null;
-                                connection.missedPings = 0;
-                            }
-                            
-                            this._emit('peerLatency', { 
-                                uuid: connection.uuid, 
-                                latency: latency,
-                                streamID: connection.streamID 
-                            });
-                            this._log(`Latency to viewer ${connection.uuid}: ${latency}ms`);
+                        // Handle pong for either role (whoever initiated ping)
+                        const latency = Date.now() - msg.pong;
+                        if (connection.pendingPing === msg.pong) {
+                            connection.pendingPing = null;
+                            connection.missedPings = 0;
                         }
+                        this._emit('peerLatency', { 
+                            uuid: connection.uuid, 
+                            latency: latency,
+                            streamID: connection.streamID 
+                        });
+                        this._log(`Latency to ${connection.type === 'publisher' ? 'viewer' : 'publisher'} ${connection.uuid}: ${latency}ms`);
                     } else if (msg.bye) {
                         this._log('Received bye message via data channel');
                         this._handleBye({ UUID: connection.uuid });
@@ -1734,24 +1945,26 @@
                             };
                             
                             // Encrypt and send via data channel
-                            if (this.password && this.password !== false) {
+                            if (this._getEffectivePassword() !== null) {
                                 try {
                                     const [encrypted, vector] = await this._encryptMessage(JSON.stringify(offer));
-                                    const restartMsg = { 
-                                        description: encrypted,
-                                        vector: vector,
-                                        session: connection.session
-                                    };
+                            const restartMsg = { 
+                                UUID: connection.uuid,
+                                description: encrypted,
+                                vector: vector,
+                                session: connection.session
+                            };
                                     this._logMessage('OUT', restartMsg, 'DataChannel');
                                     channel.send(JSON.stringify(restartMsg));
                                 } catch (error) {
                                     this._log('Failed to encrypt offer for ICE restart:', error);
                                 }
                             } else {
-                                const restartMsg = { 
-                                    description: offer,
-                                    session: connection.session
-                                };
+                            const restartMsg = { 
+                                UUID: connection.uuid,
+                                description: offer,
+                                session: connection.session
+                            };
                                 this._logMessage('OUT', restartMsg, 'DataChannel');
                                 channel.send(JSON.stringify(restartMsg));
                             }
@@ -1889,7 +2102,8 @@
                 return;
             }
 
-            // Try data channel first for individual candidates
+            // Try data channel first for individual candidates; if it succeeds, do NOT also send via WebSocket.
+            // This matches reference webrtc.js behavior: once DC is open, signaling uses DC instead of WSS.
             if (connection.dataChannel && connection.dataChannel.readyState === 'open') {
                 try {
                     const msg = {
@@ -1897,13 +2111,28 @@
                     // - If we are a VIEWER, we send type:'remote' (going TO publisher's pcs)
                     // - If we are a PUBLISHER, we send type:'local' (going TO viewer's rpcs)
                     type: connection.type === 'viewer' ? 'remote' : 'local',
-                        candidates: [{
-                            candidate: event.candidate.candidate,
-                            sdpMLineIndex: event.candidate.sdpMLineIndex,
-                            sdpMid: event.candidate.sdpMid
-                        }],
+                        UUID: connection.uuid,
+                        candidates: null,
                         session: connection.session
                     };
+                    // Encrypt candidates for DC if password set (match webrtc.js behavior)
+                    const candidatesArr = [{
+                        candidate: event.candidate.candidate,
+                        sdpMLineIndex: event.candidate.sdpMLineIndex,
+                        sdpMid: event.candidate.sdpMid
+                    }];
+                    if (this._getEffectivePassword() !== null) {
+                        try {
+                            const [encrypted, vector] = await this._encryptMessage(JSON.stringify(candidatesArr));
+                            msg.candidates = encrypted;
+                            msg.vector = vector;
+                        } catch (e) {
+                            // Fall back to plaintext if encryption fails
+                            msg.candidates = candidatesArr;
+                        }
+                    } else {
+                        msg.candidates = candidatesArr;
+                    }
                     this._logMessage('OUT', msg, 'DataChannel');
                     connection.dataChannel.send(JSON.stringify(msg));
                     this._log('Sent ICE via data channel');
@@ -1947,7 +2176,7 @@
                 connection.iceBundleDelay = Math.min(1000, connection.iceBundleDelay * 2);
 
                 // Encrypt candidates if password is set
-                if (this.password && this.password !== false && this.password !== null && this.password !== '') {
+                if (this._getEffectivePassword() !== null) {
                     try {
                         const [encrypted, vector] = await this._encryptMessage(JSON.stringify(candidates));
                         bundleMsg.candidates = encrypted;
@@ -2144,7 +2373,7 @@
          */
         async _handleSDP(msg) {
             // Check if description is encrypted
-            if (this.password && msg.vector && typeof msg.description === 'string') {
+            if (this._getEffectivePassword() !== null && msg.vector && typeof msg.description === 'string') {
                 try {
                     const decrypted = await this._decryptMessage(msg.description, msg.vector);
                     msg.description = JSON.parse(decrypted);
@@ -2233,7 +2462,7 @@
                 };
 
                 // Encrypt description if password is set
-                if (this.password && this.password !== false && this.password !== null && this.password !== '') {
+                if (this._getEffectivePassword() !== null) {
                     try {
                         const [encrypted, vector] = await this._encryptMessage(JSON.stringify(answer));
                         answerMsg.description = encrypted;
@@ -2250,7 +2479,7 @@
                 // Try data channel first, fall back to WebSocket
                 if (connection.dataChannel && connection.dataChannel.readyState === 'open') {
                     // For data channel, we need to handle encryption differently
-                    if (this.password && this.password !== false && this.password !== null && this.password !== '') {
+                    if (this._getEffectivePassword() !== null) {
                         const dcMsg = { 
                             description: answerMsg.description,
                             vector: answerMsg.vector 
@@ -2321,7 +2550,7 @@
          */
         async _handleRemoteICECandidate(msg) {
             // Check if candidate is encrypted
-            if (this.password && msg.vector && typeof msg.candidate === 'string') {
+            if (this._getEffectivePassword() !== null && msg.vector && typeof msg.candidate === 'string') {
                 try {
                     const decrypted = await this._decryptMessage(msg.candidate, msg.vector);
                     msg.candidate = JSON.parse(decrypted);
@@ -2394,7 +2623,7 @@
          */
         async _handleRemoteICECandidates(msg) {
             // Check if candidates are encrypted
-            if (this.password && msg.vector && typeof msg.candidates === 'string') {
+            if (this._getEffectivePassword() !== null && msg.vector && typeof msg.candidates === 'string') {
                 try {
                     const decrypted = await this._decryptMessage(msg.candidates, msg.vector);
                     msg.candidates = JSON.parse(decrypted);
@@ -2476,6 +2705,14 @@
 
             // Create connection for the viewer
             const connection = await this._createConnection(msg.UUID, 'publisher');
+            // Propagate pending info/label into connection
+            if (this._pendingLabel && typeof this._pendingLabel === 'string') {
+                connection.info = connection.info || {};
+                connection.info.label = this._sanitizeLabel(this._pendingLabel);
+            }
+            if (this._pendingInfo && typeof this._pendingInfo === 'object') {
+                connection.info = Object.assign(connection.info || {}, this._pendingInfo);
+            }
             connection.streamID = this.state.streamID;
 
             // Store track preferences from viewer
@@ -2488,10 +2725,23 @@
             try {
                 const offer = await this._createOffer(connection);
 
+                // Compute streamID to send (append hash suffix if encryption is enabled)
+                let streamIDToSend = this.state.streamID;
+                {
+                    const __effectivePassword = this._getEffectivePassword();
+                    if (__effectivePassword !== null) {
+                        // Ensure password hash exists
+                        if (!this._passwordHash) {
+                            this._passwordHash = await this._generateHash(__effectivePassword + this.salt, 6);
+                        }
+                        streamIDToSend = this.state.streamID + this._passwordHash;
+                    }
+                }
+
                 const offerMsg = {
                     UUID: this.state.uuid,
                     session: msg.session || connection.uuid,
-                    streamID: this.state.streamID
+                    streamID: streamIDToSend
                 };
 
                 // Store session IDs
@@ -2501,7 +2751,7 @@
                 }
 
                 // Encrypt description if password is set
-                if (this.password && this.password !== false && this.password !== null && this.password !== '') {
+                if (this._getEffectivePassword() !== null) {
                     try {
                         const [encrypted, vector] = await this._encryptMessage(JSON.stringify(offer));
                         offerMsg.description = encrypted;
@@ -2538,6 +2788,13 @@
 
             // Create connection for the viewer
             const connection = await this._createConnection(msg.UUID, 'publisher');
+            if (this._pendingLabel && typeof this._pendingLabel === 'string') {
+                connection.info = connection.info || {};
+                connection.info.label = this._sanitizeLabel(this._pendingLabel);
+            }
+            if (this._pendingInfo && typeof this._pendingInfo === 'object') {
+                connection.info = Object.assign(connection.info || {}, this._pendingInfo);
+            }
             connection.streamID = this.state.streamID;
             
             // Generate a new session for this connection (publisher creates session)
@@ -2553,14 +2810,26 @@
             try {
                 const offer = await this._createOffer(connection);
 
+                // Compute streamID to send (append hash suffix if encryption is enabled)
+                let streamIDToSend2 = this.state.streamID;
+                {
+                    const __effectivePassword = this._getEffectivePassword();
+                    if (__effectivePassword !== null) {
+                        if (!this._passwordHash) {
+                            this._passwordHash = await this._generateHash(__effectivePassword + this.salt, 6);
+                        }
+                        streamIDToSend2 = this.state.streamID + this._passwordHash;
+                    }
+                }
+
                 const offerMsg = {
                     UUID: msg.UUID,  // Target UUID for routing
                     session: connection.session,  // Use the connection's session
-                    streamID: this.state.streamID
+                    streamID: streamIDToSend2
                 };
 
                 // Encrypt description if password is set
-                if (this.password && this.password !== false && this.password !== null && this.password !== '') {
+                if (this._getEffectivePassword() !== null) {
                     try {
                         const [encrypted, vector] = await this._encryptMessage(JSON.stringify(offer));
                         offerMsg.description = encrypted;
@@ -2843,6 +3112,13 @@
 
             // Create connection for the viewer
             const connection = await this._createConnection(msg.UUID, 'publisher');
+            if (this._pendingLabel && typeof this._pendingLabel === 'string') {
+                connection.info = connection.info || {};
+                connection.info.label = this._sanitizeLabel(this._pendingLabel);
+            }
+            if (this._pendingInfo && typeof this._pendingInfo === 'object') {
+                connection.info = Object.assign(connection.info || {}, this._pendingInfo);
+            }
             connection.streamID = this.state.streamID;
             
             // Generate a new session for this connection (publisher creates session)
@@ -2852,12 +3128,38 @@
             try {
                 const offer = await this._createOffer(connection);
 
+                // Compute streamID to send (append hash suffix if encryption is enabled)
+                let streamIDToSend3 = this.state.streamID;
+                {
+                    const __effectivePassword = this._getEffectivePassword();
+                    if (__effectivePassword !== null) {
+                        if (!this._passwordHash) {
+                            this._passwordHash = await this._generateHash(__effectivePassword + this.salt, 6);
+                        }
+                        streamIDToSend3 = this.state.streamID + this._passwordHash;
+                    }
+                }
+
                 const offerMsg = {
-                    description: offer,
                     UUID: msg.UUID,  // Target UUID for routing
                     session: connection.session,  // Use the connection's session
-                    streamID: this.state.streamID
+                    streamID: streamIDToSend3
                 };
+
+                // Encrypt description if password is set
+                if (this._getEffectivePassword() !== null) {
+                    try {
+                        const [encrypted, vector] = await this._encryptMessage(JSON.stringify(offer));
+                        offerMsg.description = encrypted;
+                        offerMsg.vector = vector;
+                        this._log('Encrypted offer SDP');
+                    } catch (error) {
+                        this._log('Failed to encrypt offer:', error);
+                        offerMsg.description = offer;
+                    }
+                } else {
+                    offerMsg.description = offer;
+                }
 
                 this._sendMessageWS(offerMsg);
                 this._log('Sent offer to viewer with session:', connection.session);
@@ -3210,12 +3512,13 @@
          * @returns {Promise<[string, string]>} [encrypted data, vector] as hex strings
          */
         async _encryptMessage(message, phrase = null) {
-            if (!this.password || this.password === false || this.password === null || this.password === '') {
-                throw new Error('Password not set for encryption');
-            }
-
+            // Determine effective password unless a custom phrase is provided
             if (!phrase) {
-                phrase = this.password + this.salt;
+                const pass = this._getEffectivePassword();
+                if (pass === null) {
+                    throw new Error('Password not set for encryption');
+                }
+                phrase = pass + this.salt;
             }
 
             const vector = crypto.getRandomValues(new Uint8Array(16));
@@ -3258,12 +3561,13 @@
          * @returns {Promise<string>} Decrypted message
          */
         async _decryptMessage(encryptedData, vector, phrase = null) {
-            if (!this.password || this.password === false || this.password === null || this.password === '') {
-                throw new Error('Password not set for decryption');
-            }
-
+            // Determine effective password unless a custom phrase is provided
             if (!phrase) {
-                phrase = this.password + this.salt;
+                const pass = this._getEffectivePassword();
+                if (pass === null) {
+                    throw new Error('Password not set for decryption');
+                }
+                phrase = pass + this.salt;
             }
 
             const encryptedBytes = this._toByteArray(encryptedData);
@@ -3355,8 +3659,9 @@
          */
         async _getHashedRoom() {
             if (!this.state.room) return null;
-            if (this.password === false || this.password === null) return this.state.room;
-            return await this._hashRoom(this.state.room, this.password);
+            const pass = this._getEffectivePassword();
+            if (pass === null) return this.state.room;
+            return await this._hashRoom(this.state.room, pass);
         }
 
         // ============================================================================
@@ -3727,7 +4032,7 @@
                         };
                         
                         // Encrypt if needed
-                        if (this.password && this.password !== false && this.password !== null && this.password !== '') {
+                        if (this._getEffectivePassword() !== null) {
                             try {
                                 const [encrypted, vector] = await this._encryptMessage(JSON.stringify(offer));
                                 offerMsg.description = encrypted;
@@ -3795,7 +4100,7 @@
                             };
                             
                             // Encrypt if needed
-                            if (this.password && this.password !== false && this.password !== null && this.password !== '') {
+                            if (this._getEffectivePassword() !== null) {
                                 try {
                                     const [encrypted, vector] = await this._encryptMessage(JSON.stringify(offer));
                                     offerMsg.description = encrypted;
@@ -3911,54 +4216,113 @@
          * @param {string} type - Connection type (optional)
          * @param {boolean} allowFallback - Whether to use WebSocket fallback (default: false)
          */
-        _sendDataInternal(data, uuid = null, type = null, allowFallback = false) {
+        _sendDataInternal(data, uuid = null, type = null, preference = 'any', allowFallback = false) {
             let sent = false;
             const message = typeof data === 'string' ? data : JSON.stringify(data);
 
+            const sentConnections = new Set(); // Track which connections we've sent to
+
             if (uuid && !type) {
-                // When UUID is specified but no type, try to send through ANY available connection
-                // with preference order: viewer first (more likely to have data channel), then publisher
+                // When UUID is specified but no type, use preference to determine order
                 const connections = this.connections.get(uuid);
                 if (connections) {
-                    // Try viewer connection first
-                    if (connections.viewer && connections.viewer.dataChannel && 
-                        connections.viewer.dataChannel.readyState === 'open') {
-                        try {
-                            this._logMessage('OUT', data, 'DataChannel');
-                            connections.viewer.dataChannel.send(message);
-                            sent = true;
-                            this._log(`Sent to ${uuid} via viewer connection`);
-                        } catch (error) {
-                            this._log('Error sending via viewer connection:', error);
+                    const tryConnection = (connType) => {
+                        const conn = connections[connType];
+                        if (conn && conn.dataChannel && 
+                            conn.dataChannel.readyState === 'open' &&
+                            !sentConnections.has(conn)) {
+                            try {
+                                this._logMessage('OUT', data, 'DataChannel');
+                                conn.dataChannel.send(message);
+                                sentConnections.add(conn);
+                                sent = true;
+                                this._log(`Sent to ${uuid} via ${connType} connection`);
+                                return true;
+                            } catch (error) {
+                                this._log(`Error sending via ${connType} connection:`, error);
+                            }
                         }
-                    }
-                    
-                    // If viewer failed or doesn't exist, try publisher
-                    if (!sent && connections.publisher && connections.publisher.dataChannel && 
-                        connections.publisher.dataChannel.readyState === 'open') {
-                        try {
-                            this._logMessage('OUT', data, 'DataChannel');
-                            connections.publisher.dataChannel.send(message);
-                            sent = true;
-                            this._log(`Sent to ${uuid} via publisher connection`);
-                        } catch (error) {
-                            this._log('Error sending via publisher connection:', error);
+                        return false;
+                    };
+
+                    if (preference === 'publisher') {
+                        // ONLY use publisher channel, no fallback
+                        tryConnection('publisher');
+                    } else if (preference === 'viewer') {
+                        // ONLY use viewer channel, no fallback
+                        tryConnection('viewer');
+                    } else if (preference === 'any') {
+                        // Default: Try publisher first, then viewer if needed
+                        if (!tryConnection('publisher')) {
+                            tryConnection('viewer');
                         }
+                    } else if (preference === 'all') {
+                        // Send to both connections if they exist
+                        tryConnection('publisher');
+                        tryConnection('viewer');
                     }
                 }
             } else {
-                // Original behavior: get specific connections based on filters
+                // Get connections based on filters
                 const connections = this._getConnections({ uuid, type });
                 
-                for (const connection of connections) {
-                    if (connection && connection.dataChannel && 
-                        connection.dataChannel.readyState === 'open') {
-                        try {
-                            this._logMessage('OUT', data, 'DataChannel');
-                            connection.dataChannel.send(message);
-                            sent = true;
-                        } catch (error) {
-                            this._log('Error sending data:', error);
+                if (preference === 'all') {
+                    // Send to all matching connections
+                    for (const connection of connections) {
+                        if (connection && connection.dataChannel && 
+                            connection.dataChannel.readyState === 'open' &&
+                            !sentConnections.has(connection)) {
+                            try {
+                                this._logMessage('OUT', data, 'DataChannel');
+                                connection.dataChannel.send(message);
+                                sentConnections.add(connection);
+                                sent = true;
+                            } catch (error) {
+                                this._log('Error sending data:', error);
+                            }
+                        }
+                    }
+                } else {
+                    // Group connections by UUID to avoid duplicates
+                    const connectionsByUuid = new Map();
+                    for (const conn of connections) {
+                        if (!connectionsByUuid.has(conn.uuid)) {
+                            connectionsByUuid.set(conn.uuid, {});
+                        }
+                        connectionsByUuid.get(conn.uuid)[conn.type] = conn;
+                    }
+
+                    // Send to each UUID using preference
+                    for (const [connUuid, conns] of connectionsByUuid) {
+                        const tryConnection = (connType) => {
+                            const conn = conns[connType];
+                            if (conn && conn.dataChannel && 
+                                conn.dataChannel.readyState === 'open' &&
+                                !sentConnections.has(conn)) {
+                                try {
+                                    this._logMessage('OUT', data, 'DataChannel');
+                                    conn.dataChannel.send(message);
+                                    sentConnections.add(conn);
+                                    sent = true;
+                                    return true;
+                                } catch (error) {
+                                    this._log('Error sending data:', error);
+                                }
+                            }
+                            return false;
+                        };
+
+                        if (preference === 'publisher') {
+                            // ONLY use publisher channel
+                            tryConnection('publisher');
+                        } else if (preference === 'viewer') {
+                            // ONLY use viewer channel
+                            tryConnection('viewer');
+                        } else if (preference === 'any' || !preference) {
+                            // Default: Try publisher first, then viewer if needed
+                            if (!tryConnection('publisher')) {
+                                tryConnection('viewer');
+                            }
                         }
                     }
                 }
@@ -4014,109 +4378,98 @@
          * - This ensures messages reach the peer even in mesh scenarios or when data channels fail
          * 
          * Examples:
-         * - sendData(data) // Send to all with fallback
-         * - sendData(data, "uuid123") // Try viewer first, fallback to publisher, then WebSocket
-         * - sendData(data, { uuid: "uuid123", type: "viewer" }) // Send to viewer connection only
-         * - sendData(data, { type: "publisher" }) // Send to all publisher connections
-         * - sendData(data, { streamID: "stream1" }) // Send to all connections for stream
+         * - sendData(data) // Send to all via publisher connections (no duplicates)
+         * - sendData(data, "uuid123") // Send to specific peer (publisher channel preferred)
+         * - sendData(data, { preference: 'all' }) // Send via ALL connections (may duplicate)
+         * - sendData(data, { uuid: "uuid123", preference: 'viewer' }) // Use viewer channel
+         * - sendData(data, { type: 'publisher' }) // Send to all publisher connections
          * - sendData(data, { uuid: "uuid123", allowFallback: false }) // No WebSocket fallback
          */
         sendData(data, target = null) {
             const msg = { pipe: data };
             let allowFallback = false;  // Default to false for true P2P
+            // Default to publisher-only when broadcasting (prevents duplicates in dual-connection setups)
+            let preference = (target === null) ? 'publisher' : 'any';
             
             // Handle different parameter formats
             if (typeof target === 'string') {
-                // Simple UUID string
-                return this._sendDataInternal(msg, target, null, allowFallback);
+                // Simple UUID string - use default preference
+                return this._sendDataInternal(msg, target, null, preference, allowFallback);
             } else if (typeof target === 'object' && target !== null) {
-                // Extract fallback option if present
+                // Extract options
                 if (target.hasOwnProperty('allowFallback')) {
                     allowFallback = target.allowFallback;
                 }
+                if (target.hasOwnProperty('preference')) {
+                    preference = target.preference;
+                }
                 
                 // Options object
-                if (target.uuid || target.type || target.streamID) {
-                    const connections = this._getConnections(target);
-                    let sent = false;
-                    
-                    for (const connection of connections) {
-                        if (connection && connection.dataChannel && 
-                            connection.dataChannel.readyState === 'open') {
-                            try {
-                                this._logMessage('OUT', msg, 'DataChannel');
-                                connection.dataChannel.send(JSON.stringify(msg));
+                if (target.uuid && !target.type && !target.streamID) {
+                    // Simple UUID case
+                    return this._sendDataInternal(msg, target.uuid, null, preference, allowFallback);
+                } else if (target.uuid || target.type || target.streamID) {
+                    // Complex filtering - need to handle streamID case
+                    if (target.streamID && !target.uuid) {
+                        // Get all connections for this streamID and send using preference
+                        const connections = this._getConnections({ streamID: target.streamID, type: target.type });
+                        
+                        // Group by UUID to handle preference correctly
+                        const connectionsByUuid = new Map();
+                        for (const conn of connections) {
+                            if (!connectionsByUuid.has(conn.uuid)) {
+                                connectionsByUuid.set(conn.uuid, []);
+                            }
+                            connectionsByUuid.get(conn.uuid).push(conn);
+                        }
+                        
+                        let sent = false;
+                        for (const [uuid, conns] of connectionsByUuid) {
+                            // For each UUID, send according to preference
+                            if (this._sendDataInternal(msg, uuid, null, preference, allowFallback)) {
                                 sent = true;
-                            } catch (error) {
-                                this._log('Error sending data:', error);
                             }
                         }
+                        
+                        return sent;
+                    } else {
+                        // UUID with optional type
+                        return this._sendDataInternal(msg, target.uuid, target.type, preference, allowFallback);
                     }
-                    
-                    // If no data channel available and fallback is allowed, use WebSocket
-                    if (!sent && allowFallback && this.state.connected && this.signaling && this.signaling.readyState === WebSocket.OPEN) {
-                        try {
-                            const fallbackMsg = {
-                                ...msg,
-                                __fallback: true
-                            };
-                            
-                            if (target.uuid) {
-                                fallbackMsg.UUID = target.uuid;
-                            }
-                            
-                            this._sendMessageWS(fallbackMsg);
-                            sent = true;
-                            this._log(`Sent via WebSocket fallback${target.uuid ? ` to ${target.uuid}` : ''}`);
-                        } catch (error) {
-                            this._log('Error sending via WebSocket fallback:', error);
-                        }
-                    }
-                    
-                    return sent;
                 }
             }
             
-            // Default: send to all
-            return this._sendDataInternal(msg, null, null, allowFallback);
+            // Default: send to all with preference
+            return this._sendDataInternal(msg, null, null, preference, allowFallback);
         }
         
         /**
-         * Send a ping to measure latency (PUBLISHER ONLY)
-         * Publishers can ping viewers to measure latency
-         * @param {string} uuid - Target UUID (optional, null = all viewers)
+         * Send a ping to measure latency (manual)
+         * By convention, viewers ping publishers; publishers reply with pong.
+         * This helper sends a ping on the data channel; use from the appropriate side.
+         * @param {string} uuid - Target UUID (optional, null = all peers by preference)
          * @returns {boolean} True if ping was sent
-         * 
-         * Note: Ping/pong messages are NEVER sent via WebSocket fallback
-         * as they are specifically for testing WebRTC data channel connectivity
+         * Note: Never uses WebSocket fallback.
          */
         sendPing(uuid = null) {
-            // Only publishers should send pings
-            if (!this.state.publishing) {
-                this._log('Warning: Only publishers should send pings');
-                return false;
-            }
-            
             const timestamp = Date.now();
             
             // If targeting specific viewer, update their pending ping
             if (uuid) {
                 const connections = this.connections.get(uuid);
-                if (connections && connections.publisher) {
-                    connections.publisher.pendingPing = timestamp;
-                }
+                if (connections && connections.publisher) connections.publisher.pendingPing = timestamp;
+                if (connections && connections.viewer) connections.viewer.pendingPing = timestamp;
             } else {
                 // Update all publisher connections
                 for (const [connUuid, connections] of this.connections) {
-                    if (connections.publisher) {
-                        connections.publisher.pendingPing = timestamp;
-                    }
+                    if (connections.publisher) connections.publisher.pendingPing = timestamp;
+                    if (connections.viewer) connections.viewer.pendingPing = timestamp;
                 }
             }
             
             // IMPORTANT: Never use fallback for ping/pong
             // The whole point is to test the WebRTC connection
-            return this._sendDataInternal({ ping: timestamp }, uuid, null, false);
+            return this._sendDataInternal({ ping: timestamp }, uuid, null, 'any', false);
         }
 
         // ============================================================================
@@ -4371,44 +4724,48 @@
          * @param {Object} connection - Connection to monitor
          */
         _startPingMonitoring(connection) {
-            // Only monitor publisher connections (viewers we're publishing to)
-            if (connection.type !== 'publisher' || !this.state.publishing) {
-                return;
-            }
-            
+            // Only auto-ping from viewer connections when enabled
+            if (!this.autoPingViewer) return;
+            if (!connection || connection.type !== 'viewer') return;
+
             // Clear any existing timer
             if (connection.pingTimer) {
                 clearInterval(connection.pingTimer);
             }
-            
+
             connection.pingTimer = setInterval(() => {
+                // Only if data channel is open
+                if (!connection.dataChannel || connection.dataChannel.readyState !== 'open') return;
+
                 const now = Date.now();
-                const timeSinceLastMessage = now - connection.lastMessageTime;
-                
-                // If we haven't received any message in 10 seconds
-                if (timeSinceLastMessage >= 10000) {
-                    // Check if we have a pending ping that wasn't answered
-                    if (connection.pendingPing) {
-                        connection.missedPings++;
-                        this._log(`Missed ping #${connection.missedPings} for viewer ${connection.uuid}`);
-                        
+
+                // If we have an unanswered ping for too long, count as missed and maybe restart ICE
+                if (connection.pendingPing) {
+                    const elapsed = now - connection.pendingPing;
+                    const timeoutMs = Math.max(this.autoPingInterval * 1.5, this.autoPingInterval + 5000);
+                    if (elapsed >= timeoutMs) {
+                        connection.missedPings = (connection.missedPings || 0) + 1;
+                        this._log(`Viewer auto-ping missed #${connection.missedPings} for ${connection.uuid}`);
+
                         if (connection.missedPings >= 2) {
-                            // After 2 missed pings (30 seconds), initiate ICE restart
-                            this._log(`Initiating ICE restart for viewer ${connection.uuid} after ${connection.missedPings} missed pings`);
+                            this._log(`Viewer initiating ICE restart after ${connection.missedPings} missed pings for ${connection.uuid}`);
                             this._initiateICERestart(connection);
-                            
-                            // Reset counters
+                            // Reset counters so we don't thrash
                             connection.missedPings = 0;
                             connection.pendingPing = null;
                             return;
                         }
+                        // Clear pendingPing to allow a new ping to be sent on next tick
+                        connection.pendingPing = null;
+                    } else {
+                        // Still waiting for pong
+                        return;
                     }
-                    
-                    // Send a ping
-                    this._log(`Sending automated ping to viewer ${connection.uuid} (${timeSinceLastMessage}ms since last message)`);
-                    this.sendPing(connection.uuid);
                 }
-            }, 10000); // Check every 10 seconds
+
+                // No pending ping; send a new one
+                this.sendPing(connection.uuid);
+            }, Math.max(1000, this.autoPingInterval));
         }
 
         /**
@@ -4445,14 +4802,26 @@
                 const offer = await connection.pc.createOffer({ iceRestart: true });
                 await connection.pc.setLocalDescription(offer);
                 
+                // Compute streamID to send for ICE restart via WebSocket
+                let streamIDToSend = connection.streamID;
+                {
+                    const __effectivePassword = this._getEffectivePassword();
+                    if (__effectivePassword !== null) {
+                        if (!this._passwordHash) {
+                            this._passwordHash = await this._generateHash(__effectivePassword + this.salt, 6);
+                        }
+                        streamIDToSend = connection.streamID + this._passwordHash;
+                    }
+                }
+
                 const offerMsg = {
                     UUID: connection.uuid,
                     session: connection.session,
-                    streamID: connection.streamID
+                    streamID: streamIDToSend
                 };
                 
                 // Send the new offer
-                if (this.password && this.password !== false && this.password !== null && this.password !== '') {
+                if (this._getEffectivePassword() !== null) {
                     try {
                         const [encrypted, vector] = await this._encryptMessage(JSON.stringify(offer));
                         offerMsg.description = encrypted;
@@ -4620,7 +4989,10 @@
         global.VDONinja = VDONinjaSDK;
     }
 
-})(typeof window !== 'undefined' ? window : global);// Publisher functions that run in page context
+})(typeof window !== 'undefined' ? window : global);
+
+
+
 // Setting up VDO publisher functions...
 
 // Wait for SDK
@@ -4643,7 +5015,7 @@ const checkSDK = setInterval(() => {
 
 function setupPublisherFunctions() {
     // Create the publisher function
-    window.publishVideoToVDO = async function(videoId, streamId, roomId, title) {
+    window.publishVideoToVDO = async function(videoId, streamId, roomId, title, password) {
         try {
             // console.log('Publishing:', { videoId, streamId, roomId, title });
             
@@ -4687,33 +5059,84 @@ function setupPublisherFunctions() {
                 throw new Error('No SDK constructor');
             }
             
-            // Connect to websocket first
-            // console.log('Connecting to VDO.Ninja...');
-            await vdo.connect();
+            // Connect to websocket first with provided password (empty uses default)
+            await vdo.connect({ password: (password !== undefined ? password : undefined) });
             
             // Prepare publish options
             const publishOptions = {
-                streamID: streamId
+                streamID: streamId,
+                info: { label: title || '' }
             };
             
             if (roomId && roomId.trim()) {
                 publishOptions.room = roomId;
+            }
+            // Ensure password is propagated to joinRoom/publish flows
+            if (password !== undefined) {
+                publishOptions.password = password;
             }
             
             // Publish the stream with options
             // console.log('Publishing with options:', publishOptions);
             await vdo.publish(stream, publishOptions);
             
+            // Helper to send a polite bye over data channel
+            const sendBye = () => {
+                try {
+                    if (vdo && typeof vdo.sendData === 'function') {
+                        // Do not use WebSocket fallback; we only want DC
+                        vdo.sendData({ bye: true }, { allowFallback: false });
+                    }
+                } catch (e) {
+                    // swallow
+                }
+            };
+
+            // Cleanup routine (idempotent)
+            let cleaned = false;
+            const cleanup = async () => {
+                if (cleaned) return; cleaned = true;
+                try { sendBye(); } catch (e) {}
+                // Give DC a beat to flush before closing
+                await new Promise(r => setTimeout(r, 50));
+                try { if (vdo && vdo.disconnect) await vdo.disconnect(); } catch (e) {}
+                try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                try { if (window.vdoPublishers) delete window.vdoPublishers[streamId]; } catch (e) {}
+                try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
+            };
+
+            // Wire end/removal signals
+            try {
+                // Track-level ended
+                stream.getTracks().forEach(t => t.addEventListener('ended', cleanup, { once: true }));
+                // Video element lifecycle
+                video.addEventListener('ended', cleanup, { once: true });
+                // Detect DOM removal
+                const mo = new MutationObserver(() => {
+                    if (!video.isConnected) {
+                        mo.disconnect();
+                        cleanup();
+                    }
+                });
+                mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+            } catch (e) {
+                // best-effort only
+            }
+
             // Store
             window.vdoPublishers = window.vdoPublishers || {};
-            window.vdoPublishers[streamId] = { vdo, stream };
+            window.vdoPublishers[streamId] = { vdo, stream, videoId };
             
+            // (Label metadata broadcast intentionally omitted; handled externally)
+
             // console.log('Published successfully');
             return { success: true, streamId };
             
         } catch (error) {
             console.error('Publish error:', error);
-            return { success: false, error: error.message };
+            let msg = 'Unknown error';
+            try { msg = (error && (error.message || (typeof error === 'string' ? error : JSON.stringify(error)))) || msg; } catch (e) {}
+            return { success: false, error: msg };
         }
     };
     
@@ -4721,17 +5144,14 @@ function setupPublisherFunctions() {
     window.stopVDOPublisher = async function(streamId) {
         try {
             if (window.vdoPublishers && window.vdoPublishers[streamId]) {
-                const { vdo, stream } = window.vdoPublishers[streamId];
-                
-                if (vdo && vdo.disconnect) {
-                    await vdo.disconnect();
-                }
-                
-                if (stream) {
-                    stream.getTracks().forEach(track => track.stop());
-                }
-                
+                const { vdo, stream, videoId } = window.vdoPublishers[streamId];
+                // Send a polite bye to viewers first (no fallback)
+                try { vdo && vdo.sendData && vdo.sendData({ bye: true }, { allowFallback: false }); } catch (e) {}
+                await new Promise(r => setTimeout(r, 50));
+                if (vdo && vdo.disconnect) { await vdo.disconnect(); }
+                if (stream) { stream.getTracks().forEach(track => track.stop()); }
                 delete window.vdoPublishers[streamId];
+                try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
             }
             
             return { success: true };
@@ -4739,8 +5159,61 @@ function setupPublisherFunctions() {
             return { success: false, error: error.message };
         }
     };
+
+    // Thumbnail function (page context): capture a frame from publisher's MediaStream
+    window.getVDOPublisherThumbnail = async function(streamId) {
+        try {
+            if (!window.vdoPublishers || !window.vdoPublishers[streamId]) {
+                throw new Error('Publisher not found');
+            }
+            const { stream } = window.vdoPublishers[streamId];
+            if (!stream) throw new Error('No stream');
+
+            const video = document.createElement('video');
+            video.muted = true;
+            video.playsInline = true;
+            video.srcObject = stream;
+            const width = 160, height = 90;
+            const canvas = document.createElement('canvas');
+            canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+
+            const grab = () => {
+                try {
+                    ctx.drawImage(video, 0, 0, width, height);
+                    return canvas.toDataURL('image/jpeg', 0.7);
+                } catch (e) {
+                    return null;
+                }
+            };
+
+            // Prefer requestVideoFrameCallback if available
+            await new Promise((resolve) => {
+                const done = () => resolve();
+                if (video.requestVideoFrameCallback) {
+                    video.requestVideoFrameCallback(() => done());
+                } else {
+                    video.addEventListener('loadeddata', done, { once: true });
+                    video.addEventListener('playing', done, { once: true });
+                }
+                video.play().catch(() => {});
+            });
+
+            let dataUrl = grab();
+            if (!dataUrl) {
+                // Try one more frame shortly after
+                await new Promise(r => setTimeout(r, 50));
+                dataUrl = grab();
+            }
+            if (!dataUrl) throw new Error('No frame');
+            return { success: true, dataUrl };
+        } catch (e) {
+            return { success: false, error: e.message };
+        }
+    };
     
     window.vdoPublisherReady = true;
+    window.vdoFullyLoaded = true;
     // console.log('VDO publisher functions ready!');
 }// Bridge script to communicate between extension and page context
 (function() {
@@ -4759,7 +5232,8 @@ function setupPublisherFunctions() {
                 event.detail.videoId,
                 event.detail.streamId,
                 event.detail.roomId,
-                event.detail.title
+                event.detail.title,
+                event.detail.password
             );
             
             // Send result back
@@ -4790,6 +5264,39 @@ function setupPublisherFunctions() {
             }));
         }
     });
+
+    // Listen for thumbnail requests
+    window.addEventListener('vdo-thumb-request', async (event) => {
+        const { requestId, streamId } = event.detail || {};
+        let detail = { requestId, success: false };
+        try {
+            if (typeof window.getVDOPublisherThumbnail === 'function') {
+                const result = await window.getVDOPublisherThumbnail(streamId);
+                detail = { requestId, ...result };
+            } else {
+                detail = { requestId, success: false, error: 'Thumbnail function not found' };
+            }
+        } catch (e) {
+            detail = { requestId, success: false, error: e.message };
+        }
+        window.dispatchEvent(new CustomEvent('vdo-thumb-response', { detail }));
+    });
     
     // console.log('VDO Bridge ready');
 })();
+
+// Send bye on page unload for any remaining publishers
+try {
+    const sendByeAll = () => {
+        try {
+            if (!window.vdoPublishers) return;
+            for (const id of Object.keys(window.vdoPublishers)) {
+                const { vdo, videoId } = window.vdoPublishers[id] || {};
+                try { vdo && vdo.sendData && vdo.sendData({ bye: true }, { allowFallback: false }); } catch (e) {}
+                try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
+            }
+        } catch (e) {}
+    };
+    window.addEventListener('pagehide', sendByeAll);
+    window.addEventListener('beforeunload', sendByeAll);
+} catch (e) {}

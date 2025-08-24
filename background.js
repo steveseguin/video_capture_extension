@@ -54,7 +54,14 @@ function getVdoLinks(server, roomId, streamId, qualitySettings = {}) {
 // SDK injection not needed - already loaded via content scripts
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    handleMessage(request, sender).then(sendResponse);
+    const maybePromise = handleMessage(request, sender);
+    if (maybePromise && typeof maybePromise.then === 'function') {
+        maybePromise.then((resp) => {
+            if (resp !== '__NO_RESPONSE__') sendResponse(resp);
+        });
+    } else {
+        if (maybePromise !== '__NO_RESPONSE__') sendResponse(maybePromise);
+    }
     return true;
 });
 
@@ -65,7 +72,21 @@ async function handleMessage(request, sender) {
             
         case 'stopStream':
             return await stopVideoStream(request);
+
+        case 'publisherEnded':
+            // Page-level publisher cleaned up; remove our bookkeeping
+            if (request && request.videoId && activePublishers.has(request.videoId)) {
+                activePublishers.delete(request.videoId);
+            }
+            return { success: true };
+
+        case 'getStreamThumbnail':
+            return await getStreamThumbnail(request);
             
+        case 'getTabThumbnail':
+            // Allow offscreen document to respond to this request
+            return '__NO_RESPONSE__';
+
         case 'captureTab':
             return await startTabCapture(request);
             
@@ -81,6 +102,56 @@ async function handleMessage(request, sender) {
             
         default:
             return { error: 'Unknown request type' };
+    }
+}
+
+async function getStreamThumbnail(request) {
+    const { tabId, streamId } = request;
+    if (!tabId || !streamId) return { success: false, error: 'Missing tabId or streamId' };
+    try {
+        const requestId = Math.random().toString(36).slice(2);
+        const [result] = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: async (streamId, requestId) => {
+                return new Promise((resolve) => {
+                    // Wait briefly for bridge readiness
+                    let waited = 0;
+                    const waitStep = 50;
+                    const maxWait = 3000;
+                    const waitForReady = (cb) => {
+                        try {
+                            if (window.vdoPublisherReady || typeof window.publishVideoToVDO === 'function') {
+                                cb();
+                                return;
+                            }
+                        } catch (e) {}
+                        if (waited >= maxWait) { cb(); return; }
+                        waited += waitStep;
+                        setTimeout(() => waitForReady(cb), waitStep);
+                    };
+                    const responseHandler = (event) => {
+                        const detail = event.detail || {};
+                        if (detail.requestId !== requestId) return;
+                        window.removeEventListener('vdo-thumb-response', responseHandler);
+                        resolve(detail);
+                    };
+                    window.addEventListener('vdo-thumb-response', responseHandler);
+                    window.dispatchEvent(new CustomEvent('vdo-thumb-request', { detail: { streamId, requestId } }));
+                    setTimeout(() => {
+                        window.removeEventListener('vdo-thumb-response', responseHandler);
+                        resolve({ requestId, success: false, error: 'Thumbnail request timed out' });
+                    }, 2000);
+                });
+            },
+            args: [streamId, requestId]
+        });
+        const detail = result?.result || result;
+        if (detail && detail.success) {
+            return { success: true, dataUrl: detail.dataUrl };
+        }
+        return { success: false, error: detail?.error || 'Unknown error' };
+    } catch (e) {
+        return { success: false, error: e.message };
     }
 }
 
@@ -101,7 +172,7 @@ function checkExistingStream(request) {
 }
 
 async function startVideoStream(request) {
-    const { videoId, tabId, settings, title } = request;
+    const { videoId, tabId, frameId, settings, title } = request;
     
     // Check if we already have this stream active
     if (activePublishers.has(videoId)) {
@@ -120,7 +191,7 @@ async function startVideoStream(request) {
         
         // Check if SDK already injected
         const [checkResult] = await chrome.scripting.executeScript({
-            target: { tabId: tabId },
+            target: frameId ? { tabId: tabId, frameIds: [frameId] } : { tabId: tabId },
             func: () => window.vdoFullyLoaded
         });
         
@@ -135,8 +206,8 @@ async function startVideoStream(request) {
         
         // Use event-based communication to call publisher functions
         const [result] = await chrome.scripting.executeScript({
-            target: { tabId: tabId },
-            func: async (videoId, streamId, roomId, title) => {
+            target: frameId ? { tabId: tabId, frameIds: [frameId] } : { tabId: tabId },
+            func: async (videoId, streamId, roomId, title, password) => {
                 console.log('Sending publish request via events...');
                 
                 return new Promise((resolve) => {
@@ -148,9 +219,8 @@ async function startVideoStream(request) {
                     };
                     window.addEventListener('vdo-publish-response', responseHandler);
                     
-                    // Send publish request
                     window.dispatchEvent(new CustomEvent('vdo-publish-request', {
-                        detail: { videoId, streamId, roomId, title }
+                        detail: { videoId, streamId, roomId, title, password }
                     }));
                     
                     // Timeout after 10 seconds
@@ -160,7 +230,7 @@ async function startVideoStream(request) {
                     }, 10000);
                 });
             },
-            args: [videoId, streamId, roomId, title]
+            args: [videoId, streamId, roomId, title, settings.password || '']
         });
         
         if (!result || !result.result || !result.result.success) {
@@ -173,8 +243,10 @@ async function startVideoStream(request) {
             roomId: roomId,
             server: server,
             tabId: tabId,
+            frameId: frameId || null,
             title: title,
-            qualitySettings: settings
+            qualitySettings: settings,
+            timestamp: Date.now()
         });
         
         return {
@@ -199,41 +271,43 @@ async function stopVideoStream(request) {
     }
     
     try {
-        // Stop publisher using event-based communication
-        const [result] = await chrome.scripting.executeScript({
-            target: { tabId: tabId },
-            func: async (streamId) => {
-                return new Promise((resolve) => {
-                    const responseHandler = (event) => {
-                        window.removeEventListener('vdo-stop-response', responseHandler);
-                        resolve(event.detail);
-                    };
-                    window.addEventListener('vdo-stop-response', responseHandler);
-                    
-                    window.dispatchEvent(new CustomEvent('vdo-stop-request', {
-                        detail: { streamId }
-                    }));
-                    
-                    setTimeout(() => {
-                        window.removeEventListener('vdo-stop-response', responseHandler);
-                        resolve({ success: false, error: 'Stop request timed out' });
-                    }, 5000);
+        // Best-effort stop in the original tab when available
+        if (tabId) {
+            try {
+                await chrome.scripting.executeScript({
+                    target: (publisher.frameId) ? { tabId: tabId, frameIds: [publisher.frameId] } : { tabId: tabId },
+                    func: async (streamId) => {
+                        return new Promise((resolve) => {
+                            const responseHandler = (event) => {
+                                window.removeEventListener('vdo-stop-response', responseHandler);
+                                resolve(event.detail);
+                            };
+                            window.addEventListener('vdo-stop-response', responseHandler);
+                            window.dispatchEvent(new CustomEvent('vdo-stop-request', { detail: { streamId } }));
+                            setTimeout(() => {
+                                window.removeEventListener('vdo-stop-response', responseHandler);
+                                resolve({ success: false, error: 'Stop request timed out' });
+                            }, 5000);
+                        });
+                    },
+                    args: [publisher.streamId]
                 });
-            },
-            args: [publisher.streamId]
-        });
-        
-        // Stop capture
-        await chrome.tabs.sendMessage(tabId, {
-            type: 'stopCapture',
-            videoId: videoId
-        });
-        
+            } catch (e) {
+                console.warn('Stop request script injection failed or tab unavailable:', e.message);
+            }
+
+            try {
+                await chrome.tabs.sendMessage(tabId, { type: 'stopCapture', videoId: videoId }, { frameId: publisher.frameId });
+            } catch (e) {
+                // Content script might be gone; ignore
+            }
+        }
+
         activePublishers.delete(videoId);
-        
         return { success: true };
     } catch (error) {
         console.error('Error stopping stream:', error);
+        activePublishers.delete(videoId);
         return { success: false, error: error.message };
     }
 }
@@ -293,7 +367,9 @@ async function startTabCapture(request) {
                 streamId: streamId,
                 roomId: roomId,
                 server: server,
-                settings: settings
+                settings: settings,
+                tabId: tabId,
+                title: tab.title || 'Tab Capture'
             }, (response) => {
                 console.log('Offscreen document response:', response);
                 resolve(response);
@@ -311,7 +387,8 @@ async function startTabCapture(request) {
             roomId: roomId,
             server: server,
             title: tab.title || 'Tab Capture',
-            qualitySettings: settings
+            qualitySettings: settings,
+            timestamp: Date.now()
         });
         
         return {
@@ -358,7 +435,7 @@ function getActiveStreams() {
             id: id,
             type: 'video',
             ...publisher,
-            links: getVdoLinks(publisher.server, publisher.roomId, publisher.streamId)
+            links: getVdoLinks(publisher.server, publisher.roomId, publisher.streamId, publisher.qualitySettings)
         });
     });
     
@@ -386,10 +463,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     });
     
     if (activeTabs.has(tabId)) {
-        const capture = activeTabs.get(tabId);
-        if (capture.stream) {
-            capture.stream.getTracks().forEach(track => track.stop());
-        }
+        // Politely stop offscreen publisher; it will send bye and cleanup
+        try {
+            chrome.runtime.sendMessage({ type: 'stopTabCapture' });
+        } catch (e) {}
         activeTabs.delete(tabId);
     }
 });

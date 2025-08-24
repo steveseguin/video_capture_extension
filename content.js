@@ -15,29 +15,34 @@ function detectVideos() {
     const videoData = [];
     
     videos.forEach((video, index) => {
-        if (video.srcObject || video.src) {
-            const videoId = `video-${index}-${Date.now()}`;
-            const rect = video.getBoundingClientRect();
-            
-            const data = {
-                id: videoId,
-                index: index,
-                visible: rect.width > 0 && rect.height > 0,
-                width: video.videoWidth || rect.width,
-                height: video.videoHeight || rect.height,
-                src: video.src || 'MediaStream',
-                hasAudio: hasAudioTrack(video),
-                paused: video.paused,
-                muted: video.muted,
-                duration: video.duration,
-                currentTime: video.currentTime,
-                poster: video.poster || null,
-                title: getVideoTitle(video)
-            };
-            
+        const rect = video.getBoundingClientRect();
+        const hasSrc = !!(video.currentSrc || video.src || video.srcObject);
+        const isRenderable = video.readyState >= 2 || hasSrc || (rect.width > 0 && rect.height > 0);
+        if (!isRenderable) return;
+
+        const existingId = video.dataset.vdoCaptureId;
+        const videoId = existingId || `video-${index}-${Date.now()}`;
+
+        const data = {
+            id: videoId,
+            index: index,
+            visible: rect.width > 0 && rect.height > 0,
+            width: video.videoWidth || rect.width,
+            height: video.videoHeight || rect.height,
+            src: video.currentSrc || video.src || (video.srcObject ? 'MediaStream' : ''),
+            hasAudio: hasAudioTrack(video),
+            paused: video.paused,
+            muted: video.muted,
+            duration: video.duration,
+            currentTime: video.currentTime,
+            poster: video.poster || null,
+            title: getVideoTitle(video)
+        };
+
+        if (!existingId) {
             video.dataset.vdoCaptureId = videoId;
-            videoData.push(data);
         }
+        videoData.push(data);
     });
     
     return videoData;
@@ -50,12 +55,40 @@ function hasAudioTrack(video) {
     return !video.muted && video.volume > 0;
 }
 
+function findAriaLabelInSiblings(videoElement) {
+  if (!videoElement) {
+    return null;
+  }
+
+  // Start with the video element itself.
+  let currentElement = videoElement;
+
+  // Keep moving up the tree until there are no parents left.
+  while (currentElement.parentElement) {
+    // Check all siblings of the current element.
+    for (const sibling of currentElement.parentElement.children) {
+      // Skip the element we're currently on.
+      if (sibling === currentElement) {
+        continue;
+      }
+      // If a sibling has the aria-label, we're done.
+      if (sibling.hasAttribute('aria-label')) {
+        return sibling;
+      }
+    }
+    // If no sibling had the label, move up to the parent and repeat the process.
+    currentElement = currentElement.parentElement;
+  }
+  // Reached the top of the DOM without finding a match.
+  return null;
+}
+
 function getVideoTitle(video) {
     const parent = video.closest('[aria-label], [title]');
     if (parent) {
         return parent.getAttribute('aria-label') || parent.getAttribute('title');
     }
-    
+	
     const alt = video.getAttribute('alt') || video.getAttribute('title');
     if (alt) return alt;
     
@@ -66,8 +99,18 @@ function getVideoTitle(video) {
         const usernameEl = video.closest('[class*="videoWrapper"]')?.querySelector('[class*="username"]');
         if (usernameEl) return usernameEl.textContent;
     }
+	
+	const parenttitle = video.closest('#title');
+    if (parenttitle && parenttitle.textContent && parenttitle.textContent.length<26) {
+		return parenttitle.textContent;
+	}
+	
+	const AriaLabel = findAriaLabelInSiblings(video);
+    if (AriaLabel) {
+        return AriaLabel.getAttribute("aria-label").replace("Call tile, ","")
+    }
     
-    return `Video ${video.dataset.vdoCaptureId}`;
+    return `Video ${video?.dataset?.vdoCaptureId || window.title || window.location.hostname}`;
 }
 
 async function captureVideo(videoId) {

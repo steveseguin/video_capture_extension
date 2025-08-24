@@ -350,6 +350,26 @@ header h1::before {
     margin-bottom: 12px;
 }
 
+.stream-head-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.stream-thumb {
+    width: 48px;
+    height: 27px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: var(--discord-grey-0);
+    flex-shrink: 0;
+}
+
+.stream-thumb.placeholder {
+    display: inline-block;
+}
+
 .stream-title {
     font-weight: 600;
     color: var(--text-primary);

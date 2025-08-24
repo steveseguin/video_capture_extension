@@ -10,6 +10,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadActiveStreams();
     refreshVideos();
     updateActiveStreams();
+    // Periodically refresh active streams to avoid stale UI
+    setInterval(async () => {
+        try {
+            await syncWithBackground();
+            updateActiveStreams();
+            refreshThumbnails(true);
+        } catch (e) {}
+    }, 2000);
     
     document.getElementById('refreshBtn').addEventListener('click', refreshVideos);
     document.getElementById('captureTabBtn').addEventListener('click', captureTab);
@@ -23,24 +31,25 @@ async function syncWithBackground() {
     if (response && Array.isArray(response)) {
         console.log('Syncing with background streams:', response);
         
-        // Clear local streams first to avoid stale entries
-        activeStreams.clear();
-        
+        // Rebuild map from background; include all active streams
+        const next = new Map();
         response.forEach(stream => {
-            // Only add streams for current tab or tab captures
-            if (stream.tabId === currentTab.id || stream.id.startsWith('tab-')) {
-                activeStreams.set(stream.id, {
-                    streamId: stream.streamId,
-                    roomId: stream.roomId,
-                    title: stream.title,
-                    links: stream.links,
-                    tabId: stream.tabId,
-                    timestamp: stream.timestamp || Date.now()
-                });
-            }
+            next.set(stream.id, {
+                id: stream.id,
+                streamId: stream.streamId,
+                roomId: stream.roomId,
+                title: stream.title,
+                links: stream.links,
+                tabId: stream.tabId,
+                frameId: stream.frameId,
+                timestamp: stream.timestamp || Date.now(),
+                type: stream.type
+            });
         });
+        activeStreams = next;
         
         saveActiveStreams();
+        refreshThumbnails();
     }
 }
 
@@ -79,8 +88,38 @@ async function refreshVideos() {
     videoList.innerHTML = '<div class="loading">Scanning for videos...</div>';
     
     try {
-        const videos = await chrome.tabs.sendMessage(currentTab.id, { type: 'detectVideos' });
-        
+        // Detect across all frames and annotate with frameId
+        const results = await chrome.scripting.executeScript({
+            target: { tabId: currentTab.id, allFrames: true },
+            func: () => {
+                try {
+                    if (typeof detectVideos === 'function') {
+                        return detectVideos();
+                    }
+                } catch (e) {}
+                // Fallback minimal detection
+                const out = [];
+                const vids = document.querySelectorAll('video');
+                vids.forEach((v, i) => {
+                    const rect = v.getBoundingClientRect();
+                    const id = v.dataset.vdoCaptureId || `video-${i}-${Date.now()}`;
+                    if (!v.dataset.vdoCaptureId) v.dataset.vdoCaptureId = id;
+                    out.push({
+                        id,
+                        index: i,
+                        width: v.videoWidth || rect.width,
+                        height: v.videoHeight || rect.height,
+                        hasAudio: true,
+                        paused: v.paused,
+                        muted: v.muted,
+                        title: document.title
+                    });
+                });
+                return out;
+            }
+        });
+        const videos = (results || []).flatMap(r => Array.isArray(r.result) ? r.result.map(v => ({ ...v, frameId: r.frameId })) : []);
+
         if (!videos || videos.length === 0) {
             videoList.innerHTML = '<div class="empty-state">No videos found on this page</div>';
             // Clear any streams since there are no videos
@@ -94,10 +133,13 @@ async function refreshVideos() {
         cleanupInvalidStreams(videos.map(v => v.id));
         
         for (const video of videos) {
-            const screenshot = await chrome.tabs.sendMessage(currentTab.id, {
-                type: 'captureScreenshot',
-                videoId: video.id
-            });
+            let screenshot = null;
+            try {
+                screenshot = await chrome.tabs.sendMessage(currentTab.id, {
+                    type: 'captureScreenshot',
+                    videoId: video.id
+                }, { frameId: video.frameId });
+            } catch (e) {}
             
             const videoEl = createVideoElement(video, screenshot);
             videoList.appendChild(videoEl);
@@ -184,7 +226,8 @@ async function startStream(video) {
             links: checkResponse.links,
             tabId: currentTab.id,
             pageUrl: currentTab.url,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            type: 'video'
         });
         saveActiveStreams();
         updateActiveStreams();
@@ -209,6 +252,7 @@ async function startStream(video) {
             type: 'startStream',
             videoId: video.id,
             tabId: currentTab.id,
+            frameId: video.frameId,
             settings: settings,
             title: video.title
         });
@@ -222,8 +266,10 @@ async function startStream(video) {
                 title: video.title,
                 links: response.links,
                 tabId: currentTab.id,
+                frameId: video.frameId,
                 pageUrl: currentTab.url,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                type: 'video'
             };
             
             activeStreams.set(video.id, streamData);
@@ -250,10 +296,12 @@ async function startStream(video) {
 }
 
 async function stopStream(videoId) {
+    const st = activeStreams.get(videoId);
     const response = await chrome.runtime.sendMessage({
         type: 'stopStream',
         videoId: videoId,
-        tabId: currentTab.id
+        tabId: currentTab.id,
+        frameId: st?.frameId
     });
     
     if (response && response.success) {
@@ -323,7 +371,8 @@ async function captureTab() {
             title: `Tab: ${currentTab.title}`,
             links: response.links,
             tabId: currentTab.id,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            type: 'tab'
         });
         
         saveActiveStreams();
@@ -358,27 +407,64 @@ async function stopTabCapture() {
     }
 }
 
+async function stopActiveStream(id) {
+    const stream = activeStreams.get(id);
+    if (!stream) return;
+    if (id.startsWith('tab-')) {
+        const response = await chrome.runtime.sendMessage({ type: 'stopTabCapture', tabId: stream.tabId });
+        if (response && response.success) {
+            activeStreams.delete(id);
+            saveActiveStreams();
+            updateActiveStreams();
+            showNotification('Tab capture stopped');
+        }
+        return;
+    }
+    const response = await chrome.runtime.sendMessage({ type: 'stopStream', videoId: id, tabId: stream.tabId, frameId: stream.frameId });
+    if (response && response.success) {
+        activeStreams.delete(id);
+        saveActiveStreams();
+        updateActiveStreams();
+        showNotification('Stream stopped');
+    } else {
+        // Remove from UI anyway
+        activeStreams.delete(id);
+        saveActiveStreams();
+        updateActiveStreams();
+    }
+}
+
 function updateActiveStreams() {
     const container = document.getElementById('activeStreams');
     
-    if (activeStreams.size === 0) {
+    if (!activeStreams || activeStreams.size === 0) {
         container.innerHTML = '<div class="empty-state">No active streams</div>';
         return;
     }
     
     container.innerHTML = '';
-    
-    activeStreams.forEach((stream, id) => {
+
+    // Sort by newest first
+    const items = Array.from(activeStreams.entries())
+        .sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
+
+    items.forEach(([id, stream]) => {
         const div = document.createElement('div');
         div.className = 'stream-item';
-        
+        const title = stream.title || (id.startsWith('tab-') ? `Tab: ${stream.tabId || id.slice(4)}` : `Video ${id}`);
+        const links = Array.isArray(stream.links) ? stream.links : [];
+        const thumb = stream.thumb || '';
+
         div.innerHTML = `
             <div class="stream-header">
-                <div class="stream-title">${stream.title}</div>
+                <div class="stream-head-left">
+                    ${thumb ? `<img class=\"stream-thumb\" src=\"${thumb}\">` : `<div class=\"stream-thumb placeholder\"></div>`}
+                    <div class="stream-title">${title}</div>
+                </div>
                 <div class="stream-badge">LIVE</div>
             </div>
             <div class="stream-links">
-                ${stream.links.map(link => `
+                ${links.map(link => `
                     <div class="stream-link">
                         <span>${link.label}:</span>
                         <a href="#" data-url="${link.url}" class="stream-url">${link.url}</a>
@@ -403,13 +489,7 @@ function updateActiveStreams() {
             });
         });
         
-        div.querySelector('.danger-btn').addEventListener('click', () => {
-            if (id.startsWith('tab-')) {
-                stopTabCapture();
-            } else {
-                stopStream(id);
-            }
-        });
+        div.querySelector('.danger-btn').addEventListener('click', () => stopActiveStream(id));
         
         container.appendChild(div);
     });
@@ -422,6 +502,7 @@ function getSettings() {
     return {
         roomId: document.getElementById('roomId').value || null,
         streamId: document.getElementById('streamId').value || null,
+        password: document.getElementById('password').value ?? '',
         server: server === 'custom' ? customServer : server,
         bitrate: document.getElementById('bitrate').value || null,
         codec: document.getElementById('codec').value || null,
@@ -431,9 +512,10 @@ function getSettings() {
 }
 
 function loadSettings() {
-    chrome.storage.local.get(['roomId', 'streamId', 'server'], (data) => {
+    chrome.storage.local.get(['roomId', 'streamId', 'password', 'server'], (data) => {
         if (data.roomId) document.getElementById('roomId').value = data.roomId;
         if (data.streamId) document.getElementById('streamId').value = data.streamId;
+        if (data.password !== undefined) document.getElementById('password').value = data.password;
         if (data.server) {
             if (data.server.includes('vdo.ninja') || data.server.includes('socialstream')) {
                 document.getElementById('vdoServer').value = data.server;
@@ -445,7 +527,7 @@ function loadSettings() {
         }
     });
     
-    ['roomId', 'streamId'].forEach(id => {
+    ['roomId', 'streamId', 'password'].forEach(id => {
         document.getElementById(id).addEventListener('change', saveSettings);
     });
 }
@@ -478,4 +560,50 @@ function formatDuration(seconds) {
 
 function showNotification(message, type = 'success') {
     console.log(`[${type}] ${message}`);
+}
+
+// Thumbnail management
+let thumbRefreshInFlight = false;
+async function refreshThumbnails(throttle = false) {
+    if (thumbRefreshInFlight) return; // avoid overlap
+    thumbRefreshInFlight = true;
+    try {
+        const now = Date.now();
+        for (const [id, stream] of activeStreams.entries()) {
+            const age = now - (stream.lastThumbAt || 0);
+            const needs = !stream.thumb || (!throttle && age > 0) || (throttle && age > 15000);
+            if (!needs || stream.thumbPending) continue;
+            stream.thumbPending = true;
+            try {
+                let dataUrl = null;
+                if (stream.type === 'video' && stream.tabId && stream.streamId) {
+                    // Prefer page-context thumbnail from publisher stream
+                    try {
+                        const resp = await chrome.runtime.sendMessage({ type: 'getStreamThumbnail', tabId: stream.tabId, streamId: stream.streamId });
+                        if (resp && resp.success) dataUrl = resp.dataUrl;
+                    } catch (e) {}
+                    // Fallback to direct DOM screenshot if needed
+                    if (!dataUrl) {
+                        try {
+                            dataUrl = await chrome.tabs.sendMessage(stream.tabId, { type: 'captureScreenshot', videoId: id });
+                        } catch (e) {}
+                    }
+                } else if (stream.type === 'tab') {
+                    try {
+                        const resp = await chrome.runtime.sendMessage({ type: 'getTabThumbnail' });
+                        if (resp && resp.success) dataUrl = resp.dataUrl;
+                    } catch (e) {}
+                }
+                if (dataUrl) {
+                    stream.thumb = dataUrl;
+                    stream.lastThumbAt = Date.now();
+                }
+            } finally {
+                stream.thumbPending = false;
+            }
+        }
+    } finally {
+        thumbRefreshInFlight = false;
+        updateActiveStreams();
+    }
 }
