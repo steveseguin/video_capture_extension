@@ -222,7 +222,7 @@ async function startVideoStream(request) {
         // Use event-based communication to call publisher functions
         const [result] = await chrome.scripting.executeScript({
             target: frameId ? { tabId: tabId, frameIds: [frameId] } : { tabId: tabId },
-            func: async (videoId, streamId, roomId, title, password, server) => {
+            func: async (videoId, streamId, roomId, title, password, server, mic) => {
                 console.log('Sending publish request via events...');
                 
                 return new Promise((resolve) => {
@@ -235,7 +235,7 @@ async function startVideoStream(request) {
                     window.addEventListener('vdo-publish-response', responseHandler);
                     
                     window.dispatchEvent(new CustomEvent('vdo-publish-request', {
-                        detail: { videoId, streamId, roomId, title, password, server }
+                        detail: { videoId, streamId, roomId, title, password, server, mic }
                     }));
                     
                     // Timeout after 10 seconds
@@ -245,7 +245,7 @@ async function startVideoStream(request) {
                     }, 10000);
                 });
             },
-            args: [videoId, streamId, roomId, title, settings.password || '', server]
+            args: [videoId, streamId, roomId, title, settings.password || '', server, request.mic || { include: false }]
         });
         
         if (!result || !result.result || !result.result.success) {

@@ -1,6 +1,14 @@
 let activeStreams = new Map();
 let currentTab = null;
 
+function isRestrictedUrl(url) {
+    try {
+        return /^(chrome:\/\/|chrome-extension:\/\/|chrome-search:\/\/|chrome-devtools:\/\/|edge:\/\/|about:|devtools:\/\/|moz-extension:\/\/)/.test(url || '');
+    } catch (_) {
+        return false;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     currentTab = await getCurrentTab();
     
@@ -85,6 +93,10 @@ async function refreshVideos() {
     if (!currentTab) return;
     
     const videoList = document.getElementById('videoList');
+    if (isRestrictedUrl(currentTab.url)) {
+        videoList.innerHTML = '<div class="empty-state">This page cannot be scanned (browser internal). Open a regular website tab.</div>';
+        return;
+    }
     videoList.innerHTML = '<div class="loading">Scanning for videos...</div>';
     
     try {
@@ -183,7 +195,8 @@ function createVideoElement(video, screenshot) {
                 ${isStreaming ? 
                     `<button class="btn danger-btn" data-action="stop">Stop Publishing</button>
                      <button class="btn secondary-btn" data-action="view">Show Links</button>` :
-                    `<button class="btn primary-btn" data-action="stream">Publish Video</button>`
+                    `<button class="btn primary-btn" data-action="stream">Publish Video</button>
+                     <button class="btn secondary-btn" data-action="stream-mic" title="Publish with local mic">+ Mic</button>`
                 }
             </div>
         </div>
@@ -199,7 +212,10 @@ function createVideoElement(video, screenshot) {
 async function handleVideoAction(video, action) {
     switch(action) {
         case 'stream':
-            await startStream(video);
+            await startStream(video, { includeMic: false });
+            break;
+        case 'stream-mic':
+            await startStream(video, { includeMic: true });
             break;
         case 'stop':
             await stopStream(video.id);
@@ -210,7 +226,12 @@ async function handleVideoAction(video, action) {
     }
 }
 
-async function startStream(video) {
+async function startStream(video, options = { includeMic: false }) {
+    if (currentTab && isRestrictedUrl(currentTab.url)) {
+        showNotification('Cannot publish from this page. Open a regular website tab.', 'error');
+        alert('Cannot publish from this page. Open a regular website tab.');
+        return;
+    }
     // First check with background if this stream is already published
     const checkResponse = await chrome.runtime.sendMessage({
         type: 'checkExistingStream',
@@ -254,7 +275,8 @@ async function startStream(video) {
             tabId: currentTab.id,
             frameId: video.frameId,
             settings: settings,
-            title: video.title
+            title: video.title,
+            mic: { include: !!options.includeMic }
         });
         
         console.log('Stream response:', response);
@@ -349,6 +371,11 @@ async function captureTab() {
     if (activeStreams.has(`tab-${currentTab.id}`)) {
         showNotification('Tab capture already active');
         document.querySelector('[data-tab="active"]').click();
+        return;
+    }
+    if (currentTab && isRestrictedUrl(currentTab.url)) {
+        showNotification('Tab capture is not allowed on this page', 'error');
+        alert('Tab capture is not allowed on this page. Switch to a regular website tab.');
         return;
     }
     
@@ -565,6 +592,8 @@ function formatDuration(seconds) {
 function showNotification(message, type = 'success') {
     console.log(`[${type}] ${message}`);
 }
+
+// Mic selector removed: Chrome prompt lets users choose a device when needed
 
 // Thumbnail management
 let thumbRefreshInFlight = false;

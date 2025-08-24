@@ -110,7 +110,7 @@ function getVideoTitle(video) {
         return AriaLabel.getAttribute("aria-label").replace("Call tile, ","")
     }
     
-    return `Video ${video?.dataset?.vdoCaptureId || window.title || window.location.hostname}`;
+    return document?.title.split(" - ")[0] || window.location.hostname || "";
 }
 
 async function captureVideo(videoId) {
@@ -296,7 +296,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 initialize();  // Only initialize when first used
                 sendResponse(detectVideos());
                 break;
-            
         case 'captureVideo':
             initialize();
             captureVideo(request.videoId).then(result => {

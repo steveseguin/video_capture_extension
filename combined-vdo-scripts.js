@@ -2399,11 +2399,14 @@
         async _handleOfferSDP(msg) {
             this._log('Handling offer from:', msg.UUID, 'session:', msg.session);
 
+            // Normalize streamID to original (strip hash suffix if present)
+            const cleanStreamID = this._stripHashFromStreamID(msg.streamID);
+
             // Check if we have an existing viewer connection with different session
             const existingConnections = this.connections.get(msg.UUID);
             if (existingConnections && existingConnections.viewer) {
                 const existingConnection = existingConnections.viewer;
-                if (existingConnection.streamID === msg.streamID && 
+                if (existingConnection.streamID === cleanStreamID && 
                     existingConnection.session && existingConnection.session !== msg.session) {
                     this._log('Found existing connection with different session:', existingConnection.session, 'vs', msg.session);
                     this._log('Closing old connection due to session mismatch');
@@ -2417,11 +2420,11 @@
 
             // Create new connection
             const connection = await this._createConnection(msg.UUID, 'viewer');
-            connection.streamID = msg.streamID;
+            connection.streamID = cleanStreamID;
             connection.session = msg.session;  // Store the publisher's session
             
             // Check if we have pending view preferences for this streamID
-            const pendingView = this._pendingViews.get(msg.streamID);
+            const pendingView = this._pendingViews.get(cleanStreamID);
             if (pendingView && pendingView.options) {
                 connection.viewPreferences = {
                     audio: pendingView.options.audio !== false,
@@ -2446,7 +2449,7 @@
                 this._log('No pending view found, using default preferences:', connection.viewPreferences);
             }
             
-            this._log(`Created viewer connection for offer - UUID: ${msg.UUID}, streamID: ${msg.streamID}, session: ${msg.session}`);
+            this._log(`Created viewer connection for offer - UUID: ${msg.UUID}, streamID: ${cleanStreamID}, session: ${msg.session}`);
 
             try {
                 // Set remote description
@@ -2781,7 +2784,10 @@
         async _handlePlayRequest(msg) {
             this._log('Received play request for:', msg.streamID, 'from:', msg.UUID);
 
-            if (!this.state.publishing || this.state.streamID !== msg.streamID) {
+            // Normalize requested streamID (strip hash suffix if present)
+            const requestedStream = this._stripHashFromStreamID(msg.streamID);
+
+            if (!this.state.publishing || this.state.streamID !== requestedStream) {
                 this._log('Not publishing this stream');
                 return;
             }
@@ -4388,8 +4394,9 @@
         sendData(data, target = null) {
             const msg = { pipe: data };
             let allowFallback = false;  // Default to false for true P2P
-            // Default to publisher-only when broadcasting (prevents duplicates in dual-connection setups)
-            let preference = (target === null) ? 'publisher' : 'any';
+            // Default to any-channel; SDK will try publisher first, then viewer.
+            // Do NOT assign the entire target as a preference (target may be a UUID or options object).
+            let preference = 'any';
             
             // Handle different parameter formats
             if (typeof target === 'string') {
@@ -4993,6 +5000,7 @@
 
 
 
+
 // Setting up VDO publisher functions...
 
 // Wait for SDK
@@ -5015,7 +5023,7 @@ const checkSDK = setInterval(() => {
 
 function setupPublisherFunctions() {
     // Create the publisher function
-    window.publishVideoToVDO = async function(videoId, streamId, roomId, title, password, server) {
+    window.publishVideoToVDO = async function(videoId, streamId, roomId, title, password, server, mic) {
         try {
             // console.log('Publishing:', { videoId, streamId, roomId, title });
             
@@ -5088,6 +5096,51 @@ function setupPublisherFunctions() {
                 publishOptions.password = password;
             }
             
+            // Optionally mix local mic into the stream via Web Audio
+            try {
+                const includeMic = !!(mic && mic.include);
+                const micDeviceId = mic && mic.deviceId ? mic.deviceId : '';
+                if (includeMic && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    const micConstraints = {
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true,
+                            deviceId: micDeviceId ? { exact: micDeviceId } : undefined
+                        },
+                        video: false
+                    };
+                    const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
+                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    const destination = ctx.createMediaStreamDestination();
+                    // Add video audio if present
+                    try {
+                        if (stream && stream.getAudioTracks && stream.getAudioTracks().length > 0) {
+                            const videoSrc = ctx.createMediaStreamSource(stream);
+                            videoSrc.connect(destination);
+                        }
+                    } catch (e) {}
+                    // Add mic audio
+                    const micSrc = ctx.createMediaStreamSource(micStream);
+                    micSrc.connect(destination);
+                    // Compose final stream
+                    const videoTracks = (stream && stream.getVideoTracks) ? stream.getVideoTracks() : [];
+                    const mixedAudioTracks = destination.stream.getAudioTracks();
+                    const mixed = new MediaStream([
+                        ...videoTracks,
+                        ...mixedAudioTracks
+                    ]);
+                    stream = mixed;
+                    // Save for cleanup
+                    window.vdoPublishers = window.vdoPublishers || {};
+                    window.vdoPublishers[streamId] = window.vdoPublishers[streamId] || {};
+                    window.vdoPublishers[streamId].micStream = micStream;
+                    window.vdoPublishers[streamId].audioContext = ctx;
+                }
+            } catch (e) {
+                console.warn('Mic mixing failed:', e?.message || e);
+            }
+
             // Publish the stream with options
             // console.log('Publishing with options:', publishOptions);
             await vdo.publish(stream, publishOptions);
@@ -5113,6 +5166,11 @@ function setupPublisherFunctions() {
                 await new Promise(r => setTimeout(r, 50));
                 try { if (vdo && vdo.disconnect) await vdo.disconnect(); } catch (e) {}
                 try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                try {
+                    const rec = window.vdoPublishers && window.vdoPublishers[streamId];
+                    if (rec && rec.micStream) { rec.micStream.getTracks().forEach(t => t.stop()); }
+                    if (rec && rec.audioContext && typeof rec.audioContext.close === 'function') { rec.audioContext.close(); }
+                } catch (e) {}
                 try { if (window.vdoPublishers) delete window.vdoPublishers[streamId]; } catch (e) {}
                 try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
             };
@@ -5137,7 +5195,7 @@ function setupPublisherFunctions() {
 
             // Store
             window.vdoPublishers = window.vdoPublishers || {};
-            window.vdoPublishers[streamId] = { vdo, stream, videoId };
+            window.vdoPublishers[streamId] = { vdo, stream, videoId, micStream: (window.vdoPublishers[streamId]||{}).micStream, audioContext: (window.vdoPublishers[streamId]||{}).audioContext };
             
             // (Label metadata broadcast intentionally omitted; handled externally)
 
@@ -5156,12 +5214,14 @@ function setupPublisherFunctions() {
     window.stopVDOPublisher = async function(streamId) {
         try {
             if (window.vdoPublishers && window.vdoPublishers[streamId]) {
-                const { vdo, stream, videoId } = window.vdoPublishers[streamId];
+                const { vdo, stream, videoId, micStream, audioContext } = window.vdoPublishers[streamId];
                 // Send a polite bye to viewers first (no fallback)
                 try { vdo && vdo.sendData && vdo.sendData({ bye: true }, { allowFallback: false }); } catch (e) {}
                 await new Promise(r => setTimeout(r, 50));
                 if (vdo && vdo.disconnect) { await vdo.disconnect(); }
                 if (stream) { stream.getTracks().forEach(track => track.stop()); }
+                try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                try { if (audioContext && typeof audioContext.close === 'function') audioContext.close(); } catch (e) {}
                 delete window.vdoPublishers[streamId];
                 try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
             }
@@ -5246,7 +5306,8 @@ function setupPublisherFunctions() {
                 event.detail.roomId,
                 event.detail.title,
                 event.detail.password,
-                event.detail.server
+                event.detail.server,
+                event.detail.mic
             );
             
             // Send result back
