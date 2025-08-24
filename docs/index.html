@@ -202,6 +202,40 @@
             border-left: 4px solid var(--accent);
             padding: 25px 30px;
         }
+
+        .update-notice {
+            max-width: 820px;
+            margin: 0 auto 20px;
+            background: rgba(94, 186, 125, 0.08);
+            border-left: 4px solid #5eba7d;
+            padding: 18px 22px;
+            color: var(--text);
+        }
+        .update-notice strong { color: #8fd3a7; }
+        .notice-title { font-weight: 600; margin: 0 0 4px; }
+        .notice-sub { margin: 6px 0 0; font-size: 0.95em; color: var(--text-secondary); }
+        .badge {
+            display: inline-block;
+            background: #5eba7d;
+            color: #0f1114;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            margin-right: 8px;
+            vertical-align: baseline;
+        }
+        .version-status { margin-top: 10px; font-size: 0.9em; color: var(--text-secondary); }
+        .btn-badge {
+            display: inline-block;
+            background: #5eba7d;
+            color: #0f1114;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.75em;
+            font-weight: 700;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
         
         .warning-section h3 {
             color: var(--accent);
@@ -340,13 +374,18 @@
         <div class="download-section">
             <h2>Get the Extension</h2>
             <p>Install the VDO.Ninja Video Capture browser extension for Chrome, Edge, and other Chromium-based browsers</p>
+
+            <div class="update-notice">
+                <p class="notice-sub">⚠️ Chrome Web Store version temporarily includes bugs already fixed</p>
+                <p class="version-status" id="versionStatus">Checking GitHub for latest release…</p>
+            </div>
             
-            <a href="https://chromewebstore.google.com/detail/vdoninja-video-capture/hppndmepdhaplfamkeblnhpjmiigcdij" class="download-btn" target="_blank">
-                Install from Chrome Web Store
+            <a href="https://github.com/steveseguin/video_capture_extension/releases/latest/download/vdo-ninja-capture-extension.zip" class="download-btn">
+                Download ZIP (Manual Install) <span class="btn-badge">RECOMMENDED</span>
             </a>
-            
-            <a href="https://github.com/steveseguin/video_capture_extension/releases/latest/download/vdo-ninja-capture-extension.zip" class="download-btn secondary-btn">
-                Download ZIP (Manual Install)
+
+            <a href="https://chromewebstore.google.com/detail/vdoninja-video-capture/hppndmepdhaplfamkeblnhpjmiigcdij" class="download-btn secondary-btn" target="_blank">
+                Install from Chrome Web Store
             </a>
             
             <a href="installation.html" class="download-btn secondary-btn">
@@ -448,5 +487,33 @@
             <a href="https://vdo.ninja">VDO.Ninja</a>
         </p>
     </footer>
+    <script>
+        (function() {
+            const el = document.getElementById('versionStatus');
+            if (!el) return;
+            const ghApi = 'https://api.github.com/repos/steveseguin/video_capture_extension/releases/latest';
+            const storeUrl = 'https://chromewebstore.google.com/detail/vdoninja-video-capture/hppndmepdhaplfamkeblnhpjmiigcdij';
+
+            // Fetch GitHub latest release tag name
+            fetch(ghApi, { headers: { 'Accept': 'application/vnd.github+json' }})
+                .then(r => r.ok ? r.json() : Promise.reject())
+                .then(data => {
+                    const tag = data && (data.tag_name || data.name);
+                    if (tag) {
+                        el.textContent = `GitHub latest ${tag}, while the Chrome Web Store can be older until approvals (see store page).`;
+                    } else {
+                        throw new Error('no tag');
+                    }
+                })
+                .catch(() => {
+                    el.innerHTML = `Version status: Unable to check GitHub right now. The <strong>Download ZIP</strong> link always points to the latest release.`;
+                });
+
+            // Note: There is no reliable public API to fetch the live
+            // Chrome Web Store version client-side without credentials.
+            // Users can check the store page here if needed:
+            el.insertAdjacentHTML('beforeend', ` <a href="${storeUrl}" target="_blank">Check Web Store</a>`);
+        })();
+    </script>
 </body>
 </html>
