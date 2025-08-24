@@ -202,7 +202,7 @@ async function startVideoStream(request) {
     }
     
     try {
-        console.log('Starting new video stream for:', videoId);
+        
         
         // Check if SDK already injected
         const [checkResult] = await chrome.scripting.executeScript({
@@ -362,17 +362,17 @@ async function startTabCapture(request) {
                 reasons: ['USER_MEDIA'],
                 justification: 'Tab capture requires getUserMedia in offscreen document'
             });
-            console.log('Offscreen document created');
+            
         } catch (e) {
             // Document might already exist
-            console.log('Offscreen document might already exist:', e.message);
+            
         }
         
         // Wait a moment for offscreen document to be ready
         await new Promise(resolve => setTimeout(resolve, 100));
         
         // Start tab capture in offscreen document
-        console.log('Sending tab capture request to offscreen document:', { mediaStreamId, audio, video, streamId, roomId, server, settings });
+        
         const captureResult = await new Promise((resolve) => {
             chrome.runtime.sendMessage({
                 type: 'startTabCapture',
@@ -386,7 +386,7 @@ async function startTabCapture(request) {
                 tabId: tabId,
                 title: tab.title || 'Tab Capture'
             }, (response) => {
-                console.log('Offscreen document response:', response);
+                
                 resolve(response);
             });
         });
@@ -465,7 +465,7 @@ function getActiveStreams() {
         });
     });
     
-    console.log('Returning active streams:', streams);
+    
     return streams;
 }
 

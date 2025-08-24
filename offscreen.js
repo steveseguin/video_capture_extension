@@ -3,15 +3,15 @@ let mediaStream = null;
 let vdoPublisher = null;
 let sourceTabId = null;
 
-console.log('Offscreen document loaded');
+// offscreen document loaded
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log('Offscreen received message:', request);
+    // received message in offscreen doc
     
     if (request.type === 'startTabCapture') {
         const { mediaStreamId, audio, video, streamId, roomId, server, settings, tabId, title } = request;
         sourceTabId = tabId || null;
-        console.log('Starting tab capture with stream ID:', mediaStreamId);
+        
         
         // Get the media stream using the stream ID
         navigator.mediaDevices.getUserMedia({
@@ -29,7 +29,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             } : false
         }).then(async (stream) => {
             mediaStream = stream;
-            console.log('Got media stream, publishing to VDO.Ninja...');
+            
             
             try {
                 // Initialize VDO.Ninja SDK with room configuration
@@ -42,25 +42,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 
                 if (typeof VDONinja !== 'undefined') {
                     vdoPublisher = new VDONinja(sdkConfig);
-                    console.log('Using VDONinja');
+                    
                 } else if (typeof VDONinjaSDK !== 'undefined') {
                     vdoPublisher = new VDONinjaSDK(sdkConfig);
-                    console.log('Using VDONinjaSDK');
+                    
                 } else {
                     throw new Error('No SDK constructor available');
                 }
                 
                 // Listen for connection events
-                vdoPublisher.addEventListener('socket-connected', (e) => {
-                    console.log('WebSocket connected!', e);
-                });
+                vdoPublisher.addEventListener('socket-connected', (e) => {});
                 
-                vdoPublisher.addEventListener('socket-disconnected', (e) => {
-                    console.log('WebSocket disconnected!', e);
-                });
+                vdoPublisher.addEventListener('socket-disconnected', (e) => {});
                 
                 // Connect to websocket
-                console.log('Connecting to VDO.Ninja WebSocket with config:', sdkConfig);
+                
                 // Map selected server to a WebSocket host, if applicable
                 const serverStr = (server || settings?.server || '').toString();
                 let hostOverride = null;
@@ -75,15 +71,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const connectOpts = { password: (settings?.password !== undefined ? settings.password : undefined) };
                 if (hostOverride) connectOpts.host = hostOverride;
                 await vdoPublisher.connect(connectOpts);
-                console.log('Connected, SDK state:', {
-                    ws: vdoPublisher.ws ? 'exists' : 'missing',
-                    room: vdoPublisher.room,
-                    streamID: vdoPublisher.streamID
-                });
+                
                 
                 // If room is specified, join it
                 if (roomId && vdoPublisher.room) {
-                    console.log('Joining room:', roomId);
+                    
                     await vdoPublisher.joinRoom({ room: roomId, password: (settings?.password !== undefined ? settings.password : undefined) });
                 }
                 
@@ -98,15 +90,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 if (settings?.password !== undefined) publishOptions.password = settings.password;
                 
                 // Publish the stream
-                console.log('Publishing stream with options:', publishOptions);
-                const publishResult = await vdoPublisher.publish(mediaStream, publishOptions);
-                console.log('Publish result:', publishResult);
-                console.log('Stream published, WebRTC state:', {
-                    peerConnections: vdoPublisher.pcs ? Object.keys(vdoPublisher.pcs).length : 0,
-                    streamID: vdoPublisher.streamID
-                });
                 
-                console.log('Stream published successfully to VDO.Ninja');
+                const publishResult = await vdoPublisher.publish(mediaStream, publishOptions);
+                
+                
+                
 
                 // (Label metadata broadcast intentionally omitted; handled externally)
 

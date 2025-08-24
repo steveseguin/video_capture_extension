@@ -5054,6 +5054,8 @@ function setupPublisherFunctions() {
                 
                 stream = canvas.captureStream(30);
             }
+            // Keep a reference to the original captured media stream (video source)
+            const baseVideoStream = stream;
             
             // Create SDK instance
             let vdo;
@@ -5099,24 +5101,43 @@ function setupPublisherFunctions() {
             // Optionally mix local mic into the stream via Web Audio
             try {
                 const includeMic = !!(mic && mic.include);
-                const micDeviceId = mic && mic.deviceId ? mic.deviceId : '';
                 if (includeMic && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    // Do NOT set deviceId; let the browser's default microphone be used
                     const micConstraints = {
                         audio: {
                             echoCancellation: true,
                             noiseSuppression: true,
                             autoGainControl: true,
-                            deviceId: micDeviceId ? { exact: micDeviceId } : undefined
+                            // Hint to prefer OS default input device
+                            deviceId: { ideal: 'default' }
                         },
                         video: false
                     };
                     const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
+                    try { /* remove debug logging in production */ } catch (e) {}
                     const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    try { await ctx.resume(); } catch (e) {}
                     const destination = ctx.createMediaStreamDestination();
+                    // Keep context active in some browsers by connecting to a silent sink
+                    try {
+                        const silent = ctx.createGain();
+                        silent.gain.value = 0;
+                        destination.connect(silent);
+                        silent.connect(ctx.destination);
+                    } catch (e) {}
+                    // Prepare record for cleanup and dynamic reconnection
+                    window.vdoPublishers = window.vdoPublishers || {};
+                    window.vdoPublishers[streamId] = window.vdoPublishers[streamId] || {};
+                    const recInit = window.vdoPublishers[streamId];
+                    recInit.micStream = micStream;
+                    recInit.audioContext = ctx;
+                    recInit.audioDestination = destination;
+
                     // Add video audio if present
                     try {
                         if (stream && stream.getAudioTracks && stream.getAudioTracks().length > 0) {
                             const videoSrc = ctx.createMediaStreamSource(stream);
+                            try { recInit.videoAudioSource = videoSrc; } catch (e) {}
                             videoSrc.connect(destination);
                         }
                     } catch (e) {}
@@ -5125,17 +5146,25 @@ function setupPublisherFunctions() {
                     micSrc.connect(destination);
                     // Compose final stream
                     const videoTracks = (stream && stream.getVideoTracks) ? stream.getVideoTracks() : [];
-                    const mixedAudioTracks = destination.stream.getAudioTracks();
-                    const mixed = new MediaStream([
-                        ...videoTracks,
-                        ...mixedAudioTracks
-                    ]);
+                    let mixedAudioTracks = destination.stream.getAudioTracks();
+                    let mixed = null;
+                    if (mixedAudioTracks && mixedAudioTracks.length > 0) {
+                        mixed = new MediaStream([
+                            ...videoTracks,
+                            ...mixedAudioTracks
+                        ]);
+                        
+                    } else {
+                        // Fallback: if WebAudio failed to produce a track, add mic track directly
+                        const micTracks = micStream.getAudioTracks();
+                        try { /* remove debug logging in production */ } catch (e) {}
+                        mixed = new MediaStream([
+                            ...videoTracks,
+                            ...micTracks
+                        ]);
+                    }
                     stream = mixed;
-                    // Save for cleanup
-                    window.vdoPublishers = window.vdoPublishers || {};
-                    window.vdoPublishers[streamId] = window.vdoPublishers[streamId] || {};
-                    window.vdoPublishers[streamId].micStream = micStream;
-                    window.vdoPublishers[streamId].audioContext = ctx;
+                    // Save for cleanup already set above
                 }
             } catch (e) {
                 console.warn('Mic mixing failed:', e?.message || e);
@@ -5177,8 +5206,25 @@ function setupPublisherFunctions() {
 
             // Wire end/removal signals
             try {
-                // Track-level ended
-                stream.getTracks().forEach(t => t.addEventListener('ended', cleanup, { once: true }));
+                // Track-level ended: only hard stop on audio; for video, allow a short grace window for replacement
+                stream.getTracks().forEach(t => {
+                    if (t.kind === 'audio') {
+                        t.addEventListener('ended', cleanup, { once: true });
+                    } else if (t.kind === 'video') {
+                        t.addEventListener('ended', () => {
+                            try {
+                                if (window.vdoPublishers && window.vdoPublishers[streamId]) {
+                                    const rec = window.vdoPublishers[streamId];
+                                    if (rec && !rec._replaceTimer) {
+                                        rec._replaceTimer = setTimeout(() => { try { cleanup(); } catch (e) {} }, 2000);
+                                    }
+                                } else {
+                                    cleanup();
+                                }
+                            } catch (e) { cleanup(); }
+                        }, { once: true });
+                    }
+                });
                 // Video element lifecycle
                 video.addEventListener('ended', cleanup, { once: true });
                 // Detect DOM removal
@@ -5193,9 +5239,100 @@ function setupPublisherFunctions() {
                 // best-effort only
             }
 
+            // Handle dynamic track replacement from source stream
+            try {
+                // Prepare record for helpers and cleanup access
+                window.vdoPublishers = window.vdoPublishers || {};
+                window.vdoPublishers[streamId] = window.vdoPublishers[streamId] || {};
+                const rec = window.vdoPublishers[streamId];
+
+                const clearReplaceTimer = () => {
+                    if (rec._replaceTimer) { clearTimeout(rec._replaceTimer); rec._replaceTimer = null; }
+                };
+                const replaceVideoTrack = async (newTrack) => {
+                    try {
+                        if (!rec || !rec.stream || !rec.vdo || !newTrack) return;
+                        const current = (rec.stream.getVideoTracks && rec.stream.getVideoTracks()[0]) || null;
+                        if (current === newTrack) { clearReplaceTimer(); return; }
+                        // Update local MediaStream
+                        if (current) { try { rec.stream.removeTrack(current); } catch (e) {} }
+                        try { rec.stream.addTrack(newTrack); } catch (e) {}
+                        // Replace on RTCPeerConnection sender
+                        try { await rec.vdo.replaceTrack(current, newTrack); } catch (e) {}
+                        // Listen for next end event on new track
+                        try { newTrack.addEventListener('ended', () => {
+                            if (!rec._replaceTimer) rec._replaceTimer = setTimeout(() => { try { cleanup(); } catch (e) {} }, 2000);
+                        }, { once: true }); } catch (e) {}
+                        clearReplaceTimer();
+                        
+                    } catch (e) {}
+                };
+                const replaceAudioTrack = async (newTrack) => {
+                    try {
+                        if (!rec || !rec.stream || !rec.vdo || !newTrack) return;
+                        const current = (rec.stream.getAudioTracks && rec.stream.getAudioTracks()[0]) || null;
+                        if (current === newTrack) { return; }
+                        if (current) { try { rec.stream.removeTrack(current); } catch (e) {} }
+                        try { rec.stream.addTrack(newTrack); } catch (e) {}
+                        try { await rec.vdo.replaceTrack(current, newTrack); } catch (e) {}
+                        try { console.log('[VDO Ext] Replaced audio track after source change'); } catch (e) {}
+                    } catch (e) {}
+                };
+
+                // Listen for source stream track changes
+                try {
+                    baseVideoStream.addEventListener('addtrack', (ev) => {
+                        if (!ev || !ev.track) return;
+                        if (ev.track.kind === 'video') {
+                            replaceVideoTrack(ev.track);
+                        } else if (ev.track.kind === 'audio') {
+                            // Only replace audio directly if we are NOT using the mixer
+                            const usingMixer = !!(rec && rec.audioContext);
+                            if (!usingMixer) replaceAudioTrack(ev.track);
+                            else {
+                                // For mixer path, (re)connect base video audio into the destination
+                                try {
+                                    if (rec.audioContext && rec.audioDestination) {
+                                        if (rec.videoAudioSource) { try { rec.videoAudioSource.disconnect(); } catch (e) {} }
+                                        rec.videoAudioSource = rec.audioContext.createMediaStreamSource(baseVideoStream);
+                                        rec.videoAudioSource.connect(rec.audioDestination);
+                                        
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+                    });
+                } catch (e) {}
+                try {
+                    baseVideoStream.addEventListener('removetrack', (ev) => {
+                        if (!ev || !ev.track) return;
+                        if (ev.track.kind === 'video') {
+                            if (!rec._replaceTimer) rec._replaceTimer = setTimeout(() => { try { cleanup(); } catch (e) {} }, 2000);
+                        } else if (ev.track.kind === 'audio') {
+                            // For mixer path, disconnect the old source; for direct path, wait briefly for replacement then end
+                            const usingMixer = !!(rec && rec.audioContext);
+                            if (usingMixer) {
+                                try { if (rec.videoAudioSource) { rec.videoAudioSource.disconnect(); rec.videoAudioSource = null; } } catch (e) {}
+                            } else {
+                                setTimeout(() => {
+                                    try {
+                                        const hasAudio = baseVideoStream.getAudioTracks && baseVideoStream.getAudioTracks().length > 0;
+                                        if (!hasAudio) cleanup();
+                                    } catch (e) { cleanup(); }
+                                }, 2000);
+                            }
+                        }
+                    });
+                } catch (e) {}
+            } catch (e) {}
+
             // Store
             window.vdoPublishers = window.vdoPublishers || {};
-            window.vdoPublishers[streamId] = { vdo, stream, videoId, micStream: (window.vdoPublishers[streamId]||{}).micStream, audioContext: (window.vdoPublishers[streamId]||{}).audioContext };
+            window.vdoPublishers[streamId] = Object.assign(window.vdoPublishers[streamId] || {}, {
+                vdo, stream, videoId,
+                micStream: (window.vdoPublishers[streamId]||{}).micStream,
+                audioContext: (window.vdoPublishers[streamId]||{}).audioContext
+            });
             
             // (Label metadata broadcast intentionally omitted; handled externally)
 

@@ -49,10 +49,22 @@ function detectVideos() {
 }
 
 function hasAudioTrack(video) {
-    if (video.srcObject && video.srcObject.getAudioTracks) {
-        return video.srcObject.getAudioTracks().length > 0;
-    }
-    return !video.muted && video.volume > 0;
+    try {
+        if (video.srcObject instanceof MediaStream) {
+            return video.srcObject.getAudioTracks().length > 0;
+        }
+        if (typeof video.mozHasAudio === 'boolean') {
+            return video.mozHasAudio;
+        }
+        if (typeof video.webkitAudioDecodedByteCount === 'number') {
+            return video.webkitAudioDecodedByteCount > 0;
+        }
+        if (video.audioTracks && typeof video.audioTracks.length === 'number') {
+            return video.audioTracks.length > 0;
+        }
+    } catch (e) {}
+    // Heuristic fallback: avoid false negatives by defaulting to true
+    return true;
 }
 
 function findAriaLabelInSiblings(videoElement) {

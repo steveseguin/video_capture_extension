@@ -37,7 +37,7 @@ async function syncWithBackground() {
     const response = await chrome.runtime.sendMessage({ type: 'getActiveStreams' });
     
     if (response && Array.isArray(response)) {
-        console.log('Syncing with background streams:', response);
+        // synced active streams
         
         // Rebuild map from background; include all active streams
         const next = new Map();
@@ -266,7 +266,7 @@ async function startStream(video, options = { includeMic: false }) {
     
     const settings = getSettings();
     
-    console.log('Starting new stream for video:', video);
+    
     
     try {
         const response = await chrome.runtime.sendMessage({
@@ -279,7 +279,7 @@ async function startStream(video, options = { includeMic: false }) {
             mic: { include: !!options.includeMic }
         });
         
-        console.log('Stream response:', response);
+        
         
         if (response.success) {
             const streamData = {
@@ -614,11 +614,17 @@ async function refreshThumbnails(throttle = false) {
                     try {
                         const resp = await chrome.runtime.sendMessage({ type: 'getStreamThumbnail', tabId: stream.tabId, streamId: stream.streamId });
                         if (resp && resp.success) dataUrl = resp.dataUrl;
+                        // If the returned JPEG is suspiciously tiny, consider it invalid (likely black frame)
+                        if (dataUrl && isLikelyBlackImage(dataUrl)) {
+                            dataUrl = null;
+                        }
                     } catch (e) {}
                     // Fallback to direct DOM screenshot if needed
                     if (!dataUrl) {
                         try {
-                            dataUrl = await chrome.tabs.sendMessage(stream.tabId, { type: 'captureScreenshot', videoId: id });
+                            const opts = {};
+                            if (stream.frameId !== undefined && stream.frameId !== null) opts.frameId = stream.frameId;
+                            dataUrl = await chrome.tabs.sendMessage(stream.tabId, { type: 'captureScreenshot', videoId: id }, opts);
                         } catch (e) {}
                     }
                 } else if (stream.type === 'tab') {
@@ -638,5 +644,21 @@ async function refreshThumbnails(throttle = false) {
     } finally {
         thumbRefreshInFlight = false;
         updateActiveStreams();
+    }
+}
+
+function isLikelyBlackImage(dataUrl) {
+    try {
+        if (!dataUrl || typeof dataUrl !== 'string') return false;
+        if (!dataUrl.startsWith('data:image/jpeg')) return false;
+        const comma = dataUrl.indexOf(',');
+        if (comma === -1) return false;
+        const b64len = dataUrl.length - comma - 1;
+        // Approximate raw bytes from base64 length
+        const bytes = Math.floor(b64len * 3 / 4);
+        // 160x90 JPEG at 0.7 quality is typically > 2KB; all-black often < 1KB
+        return bytes < 1200;
+    } catch (e) {
+        return false;
     }
 }
