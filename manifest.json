@@ -15,8 +15,8 @@
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "service_worker.js",
-    "scripts": ["service_worker.js"]
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
   },
   "action": {
     "default_popup": "popup.html",
