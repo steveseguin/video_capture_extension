@@ -23,14 +23,24 @@ function detectVideos() {
         const existingId = video.dataset.vdoCaptureId;
         const videoId = existingId || `video-${index}-${Date.now()}`;
 
+        // Determine dimensions using intrinsic size first, then layout box
+        const width = video.videoWidth || rect.width || 0;
+        const height = video.videoHeight || rect.height || 0;
+        const hasAudio = hasAudioTrack(video);
+
+        // Filter out truly empty media: 0x0 with no audio
+        if (width === 0 && height === 0 && !hasAudio) {
+            return;
+        }
+
         const data = {
             id: videoId,
             index: index,
             visible: rect.width > 0 && rect.height > 0,
-            width: video.videoWidth || rect.width,
-            height: video.videoHeight || rect.height,
+            width: width,
+            height: height,
             src: video.currentSrc || video.src || (video.srcObject ? 'MediaStream' : ''),
-            hasAudio: hasAudioTrack(video),
+            hasAudio: hasAudio,
             paused: video.paused,
             muted: video.muted,
             duration: video.duration,
@@ -63,8 +73,8 @@ function hasAudioTrack(video) {
             return video.audioTracks.length > 0;
         }
     } catch (e) {}
-    // Heuristic fallback: avoid false negatives by defaulting to true
-    return true;
+    // If we can't positively detect audio, be conservative and say no
+    return false;
 }
 
 function findAriaLabelInSiblings(videoElement) {
@@ -130,6 +140,19 @@ async function captureVideo(videoId) {
     if (!video) return null;
     
     try {
+        // Guard: avoid capturing empty 0x0 video with no audio
+        const rect = video.getBoundingClientRect();
+        const intrinsicW = video.videoWidth || 0;
+        const intrinsicH = video.videoHeight || 0;
+        const layoutW = rect.width || 0;
+        const layoutH = rect.height || 0;
+        const effW = intrinsicW || layoutW || 0;
+        const effH = intrinsicH || layoutH || 0;
+        const hasAudio = hasAudioTrack(video);
+        if (effW === 0 && effH === 0 && !hasAudio) {
+            throw new Error('Refusing to capture 0x0 video without audio');
+        }
+
         let stream;
         
         if (video.captureStream) {
@@ -147,8 +170,11 @@ async function captureVideo(videoId) {
         
         if (videoTracks.length === 0) {
             const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
+            // If intrinsic size is 0, fall back to layout size; otherwise a small default
+            const cw = video.videoWidth || rect.width || 640;
+            const ch = video.videoHeight || rect.height || 480;
+            canvas.width = cw;
+            canvas.height = ch;
             const ctx = canvas.getContext('2d');
             
             const canvasStream = canvas.captureStream(30);
