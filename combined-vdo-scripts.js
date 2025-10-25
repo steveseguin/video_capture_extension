@@ -1,4 +1,11 @@
-// VDO.Ninja SDK v1.3.15
+// VDO.Ninja SDK v1.3.17
+
+const MEDIA_STREAM_TRACK_ENABLED_DESCRIPTOR =
+    (typeof MediaStreamTrack !== 'undefined' && MediaStreamTrack?.prototype)
+        ? Object.getOwnPropertyDescriptor(MediaStreamTrack.prototype, 'enabled')
+        : null;
+
+const OUTBOUND_VIDEO_STOP_MUTE_DELAY_MS = 500;
 /**
  * VDO.Ninja SDK - OFFICIAL SDK FOR VDO.NINJA WEBSOCKET API
  * Copyright (C) 2025 Steve Seguin and contributors
@@ -327,7 +334,7 @@
          * @returns {string} Current SDK version
          */
         static get VERSION() {
-            return '1.3.15';
+            return '1.3.17';
         }
         
         /**
@@ -550,6 +557,9 @@
             }
             this._pendingRoomID = options.roomid || options.roomID || null;  // Support both cases
             
+            // Preferred media configuration for outgoing WebRTC tracks
+            this._publishMediaConfig = null;
+            
             // Convenience event aliases for common patterns (Node-style)
             // sdk.on('event', handler), sdk.off('event', handler), sdk.once('event', handler)
             this.on = (evt, handler) => { try { this.addEventListener(evt, handler); } catch (e) {} return this; };
@@ -625,6 +635,10 @@
             // View retry mechanism
             this._viewRetryTimers = new Map();
             this._viewRetryInterval = 15 * 60 * 1000; // 15 minutes
+            
+            // Track monitoring for outbound video tracks
+            this._outboundVideoMonitors = new Map();
+            this._pendingVideoMuteFinalizers = new Set();
             
             // Initialize salt before setting up crypto
             this.salt = options.salt || "vdo.ninja";
@@ -870,19 +884,21 @@
                     }
                 }
                 this.connections.clear();
-                
+
+                this._clearAllVideoTrackMonitors();
+
                 // Clear all retry timers
                 for (const [streamID, timer] of this._viewRetryTimers) {
                     clearTimeout(timer);
                 }
                 this._viewRetryTimers.clear();
-                
+
                 // Close WebSocket
                 if (this.signaling) {
                     this.signaling.close();
                     this.signaling = null;
                 }
-                
+
                 // Reset state
                 this.state = {
                     connected: false,
@@ -892,7 +908,7 @@
                     roomJoined: false,
                     publishing: false
                 };
-                
+
                 this._emit('disconnected');
             });
         }
@@ -1132,6 +1148,16 @@
             }
 
             this.localStream = stream;
+            
+            // Resolve desired media preferences for outgoing tracks
+            const mediaPreferences = await this._extractPublisherMediaOptions(options);
+            if (mediaPreferences) {
+                this._publishMediaConfig = mediaPreferences;
+            }
+            if (this._publishMediaConfig) {
+                await this._applyLocalMediaPreferences(this.localStream, this._publishMediaConfig);
+            }
+
             // Use provided streamID, fall back to pending value from constructor/property, then generate
             const streamID = this._sanitizeStreamID(options.streamID || this._pendingStreamID) || this._generateStreamID();
 
@@ -1185,6 +1211,13 @@
             // Store state
             this.state.streamID = streamID;
             this.state.publishing = true;
+
+            // Start monitoring outbound video tracks for mute state changes
+            this._clearAllVideoTrackMonitors();
+            if (this.localStream) {
+                const videoTracks = this.localStream.getVideoTracks ? this.localStream.getVideoTracks() : [];
+                videoTracks.forEach(track => this._monitorOutboundVideoTrack(track));
+            }
 
             // Send seed message
             const seedMessage = {
@@ -1310,6 +1343,12 @@
                 return;
             }
 
+            if (this._outboundVideoMonitors && this._outboundVideoMonitors.size) {
+                for (const monitor of this._outboundVideoMonitors.values()) {
+                    this._sendVideoMutedState(monitor.track, true, null, 'stopPublishing');
+                }
+            }
+
             // Send bye message to all viewers via data channels
             const byePromises = [];
             
@@ -1366,6 +1405,8 @@
                         }
                     }
                 }
+
+                this._clearAllVideoTrackMonitors();
 
                 // Stop local stream tracks
                 if (this.localStream) {
@@ -1736,6 +1777,447 @@
         }
 
         /**
+         * Determine if a track is effectively muted for viewers.
+         * @private
+         * @param {MediaStreamTrack} track
+         * @returns {boolean}
+         */
+        _isTrackEffectivelyMuted(track) {
+            if (!track) return true;
+            if (track.readyState === 'ended') return true;
+            if (track.enabled === false) return true;
+            if (track.muted === true) return true;
+            return false;
+        }
+
+        /**
+         * Broadcast publisher video mute state to viewers.
+         * @private
+         * @param {MediaStreamTrack} track
+         * @param {boolean} muted
+         * @param {string|null} targetUuid
+         */
+        _sendVideoMutedState(track, muted, targetUuid = null, reason = null) {
+            if (!this.state || !this.state.publishing) {
+                return;
+            }
+
+            const payload = { videoMuted: !!muted };
+            if (track && typeof track.id === 'string') {
+                payload.trackId = track.id;
+            }
+            if (reason) {
+                this._log(`Broadcasting videoMuted:${payload.videoMuted} (${reason})`);
+            }
+
+            if (targetUuid) {
+                this._sendDataInternal(payload, targetUuid, null, 'publisher');
+            } else {
+                this._sendDataInternal(payload, null, 'publisher', 'publisher');
+            }
+        }
+
+        /**
+         * Start monitoring an outbound video track for mute state changes.
+         * @private
+         * @param {MediaStreamTrack} track
+         */
+        _monitorOutboundVideoTrack(track) {
+            if (!track || track.kind !== 'video') return;
+            if (this._pendingVideoMuteFinalizers && this._pendingVideoMuteFinalizers.size) {
+                this._cancelPendingVideoMuteFinalizers();
+            }
+            if (!this._outboundVideoMonitors) {
+                this._outboundVideoMonitors = new Map();
+            }
+            if (this._outboundVideoMonitors.has(track)) {
+                // Refresh state in case external code toggled before monitoring
+                const monitor = this._outboundVideoMonitors.get(track);
+                const currentState = this._isTrackEffectivelyMuted(track);
+                if (monitor) {
+                    monitor.lastState = currentState;
+                }
+                if (this.state?.publishing) {
+                    this._sendVideoMutedState(track, currentState, null, 'refresh');
+                }
+                return;
+            }
+
+            const monitor = {
+                track,
+                lastState: this._isTrackEffectivelyMuted(track),
+                restoreEnabled: null,
+                restoreStop: null,
+                listeners: [],
+                poller: null,
+                pendingFinalizer: null,
+                finalizing: false
+            };
+
+            const broadcastState = (muted, reasonLabel) => {
+                const label = reasonLabel || 'update';
+                this._sendVideoMutedState(track, muted, null, label);
+                this._emit('publisherVideoMuteState', {
+                    track,
+                    muted,
+                    reason: label
+                });
+            };
+
+            const emitState = (reason, options = {}) => {
+                const { force = false, delay = 0, cleanup = false } = options;
+                const evaluateMuted = () => this._isTrackEffectivelyMuted(track);
+
+                const dispatch = () => {
+                    if (monitor.pendingFinalizer) {
+                        monitor.pendingFinalizer = null;
+                    }
+                    const mutedNow = evaluateMuted();
+                    if (!force && mutedNow === monitor.lastState) {
+                        if (cleanup) {
+                            this._unmonitorOutboundVideoTrack(track, { skipSend: true });
+                        }
+                        return;
+                    }
+
+                    monitor.lastState = mutedNow;
+                    broadcastState(mutedNow, reason || 'update');
+
+                    if (cleanup) {
+                        this._unmonitorOutboundVideoTrack(track, { skipSend: true });
+                    }
+                };
+
+                if (monitor.pendingFinalizer) {
+                    try {
+                        monitor.pendingFinalizer.cancel();
+                    } catch (err) {
+                        this._log('Error cancelling pending mute finalizer:', err);
+                    }
+                    monitor.pendingFinalizer = null;
+                }
+
+                if (delay > 0) {
+                    monitor.pendingFinalizer = this._scheduleVideoMuteFinalizer(delay, dispatch, () => {
+                        monitor.pendingFinalizer = null;
+                    });
+                } else {
+                    dispatch();
+                }
+            };
+
+            const finalizeOnce = (reasonLabel) => {
+                if (monitor.finalizing) return;
+                monitor.finalizing = true;
+                emitState(reasonLabel, {
+                    force: true,
+                    delay: OUTBOUND_VIDEO_STOP_MUTE_DELAY_MS,
+                    cleanup: true
+                });
+            };
+
+            const handleMute = () => emitState('mute');
+            const handleUnmute = () => emitState('unmute');
+            const handleEnded = () => finalizeOnce('ended');
+
+            if (typeof track.addEventListener === 'function') {
+                track.addEventListener('mute', handleMute);
+                track.addEventListener('unmute', handleUnmute);
+                track.addEventListener('ended', handleEnded);
+                monitor.listeners.push(['mute', handleMute], ['unmute', handleUnmute], ['ended', handleEnded]);
+            }
+
+            if (typeof track.stop === 'function') {
+                const originalStop = track.stop.bind(track);
+                try {
+                    track.stop = (...args) => {
+                        finalizeOnce('stop');
+                        return originalStop(...args);
+                    };
+                    monitor.restoreStop = () => {
+                        try {
+                            track.stop = originalStop;
+                        } catch (err) {
+                            this._log('Failed to restore track.stop:', err);
+                        }
+                    };
+                } catch (error) {
+                    this._log('Unable to wrap MediaStreamTrack.stop for monitoring:', error);
+                }
+            }
+
+            let trackExtensible = false;
+            try {
+                trackExtensible = Object.isExtensible(track);
+            } catch (err) {
+                this._log('Unable to inspect MediaStreamTrack extensibility:', err);
+            }
+
+            const canRedefineEnabled =
+                !!MEDIA_STREAM_TRACK_ENABLED_DESCRIPTOR &&
+                typeof MEDIA_STREAM_TRACK_ENABLED_DESCRIPTOR.get === 'function' &&
+                typeof MEDIA_STREAM_TRACK_ENABLED_DESCRIPTOR.set === 'function' &&
+                (MEDIA_STREAM_TRACK_ENABLED_DESCRIPTOR.configurable !== false) &&
+                trackExtensible;
+
+            if (canRedefineEnabled) {
+                const { get: baseGet, set: baseSet } = MEDIA_STREAM_TRACK_ENABLED_DESCRIPTOR;
+                try {
+                    Object.defineProperty(track, 'enabled', {
+                        configurable: true,
+                        enumerable: true,
+                        get() {
+                            return baseGet.call(track);
+                        },
+                        set: (value) => {
+                            const before = baseGet.call(track);
+                            baseSet.call(track, value);
+                            const after = baseGet.call(track);
+                            if (before !== after) {
+                                emitState('enabled-toggle');
+                            }
+                        }
+                    });
+                    monitor.restoreEnabled = () => {
+                        try {
+                            delete track.enabled;
+                        } catch (err) {
+                            this._log('Failed to restore track.enabled descriptor:', err);
+                        }
+                    };
+                } catch (error) {
+                    this._log('Unable to wrap MediaStreamTrack.enabled for monitoring:', error);
+                }
+            } else {
+                this._log('Skipping MediaStreamTrack.enabled override; falling back to polling.');
+            }
+
+            if (!monitor.restoreEnabled) {
+                // Poll as a Safari/iOS fallback so we still detect state updates when redefine fails.
+                monitor.poller = setInterval(() => emitState('poll'), 250);
+            }
+
+            this._outboundVideoMonitors.set(track, monitor);
+
+            // Send initial state so viewers immediately know current mute status
+            if (this.state?.publishing) {
+                broadcastState(monitor.lastState, 'initial');
+            } else {
+                this._emit('publisherVideoMuteState', {
+                    track,
+                    muted: monitor.lastState,
+                    reason: 'initial'
+                });
+            }
+        }
+
+        /**
+         * Stop monitoring an outbound video track.
+         * @private
+         * @param {MediaStreamTrack} track
+         * @param {Object} options
+         * @param {boolean} options.skipSend - If true, do not send final state
+         * @param {boolean} options.forceMuted - Optional final state override
+         */
+        _unmonitorOutboundVideoTrack(track, options = {}) {
+            if (!track || !this._outboundVideoMonitors || !this._outboundVideoMonitors.has(track)) {
+                return;
+            }
+
+            const monitor = this._outboundVideoMonitors.get(track);
+
+            if (monitor) {
+                if (monitor.pendingFinalizer) {
+                    try {
+                        monitor.pendingFinalizer.cancel();
+                    } catch (err) {
+                        this._log('Error cancelling monitor pending finalizer:', err);
+                    }
+                    monitor.pendingFinalizer = null;
+                }
+
+                const shouldSendFinal = !options.skipSend && this.state?.publishing && !monitor.finalizing;
+                if (shouldSendFinal) {
+                    const finalMuted = typeof options.forceMuted === 'boolean'
+                        ? options.forceMuted
+                        : true;
+                    const finalReason = typeof options.forceMuted === 'boolean'
+                        ? 'force-muted'
+                        : 'monitor-stopped';
+                    const delayMs = typeof options.delayMs === 'number'
+                        ? Math.max(0, options.delayMs)
+                        : (finalMuted ? OUTBOUND_VIDEO_STOP_MUTE_DELAY_MS : 0);
+
+                    const dispatch = () => {
+                        this._sendVideoMutedState(track, finalMuted, null, finalReason);
+                        this._emit('publisherVideoMuteState', {
+                            track,
+                            muted: finalMuted,
+                            reason: finalReason
+                        });
+                    };
+
+                    if (delayMs > 0) {
+                        monitor.pendingFinalizer = this._scheduleVideoMuteFinalizer(delayMs, dispatch, () => {
+                            monitor.pendingFinalizer = null;
+                        });
+                    } else {
+                        dispatch();
+                    }
+                }
+                if (monitor.restoreEnabled) {
+                    try {
+                        monitor.restoreEnabled();
+                    } catch (err) {
+                        this._log('Failed to restore track.enabled descriptor:', err);
+                    }
+                }
+                if (monitor.restoreStop) {
+                    try {
+                        monitor.restoreStop();
+                    } catch (err) {
+                        this._log('Failed to restore track.stop override:', err);
+                    }
+                }
+                if (monitor.poller) {
+                    clearInterval(monitor.poller);
+                    monitor.poller = null;
+                }
+                if (monitor.listeners && typeof track.removeEventListener === 'function') {
+                    for (const [evt, handler] of monitor.listeners) {
+                        try {
+                            track.removeEventListener(evt, handler);
+                        } catch (err) {
+                            // Ignore cleanup errors
+                        }
+                    }
+                }
+            }
+
+            this._outboundVideoMonitors.delete(track);
+        }
+
+        /**
+         * Schedule a delayed videoMute broadcast that can be flushed later.
+         * @private
+         * @param {number} delayMs
+         * @param {Function} dispatch
+         * @param {Function} onFinish
+         * @returns {Object} finalizer handle with flush() and cancel()
+         */
+        _scheduleVideoMuteFinalizer(delayMs, dispatch, onFinish) {
+            if (!this._pendingVideoMuteFinalizers) {
+                this._pendingVideoMuteFinalizers = new Set();
+            }
+
+            const self = this;
+            const finalizer = {
+                timerId: null,
+                finished: false,
+                flush() {
+                    if (finalizer.finished) return;
+                    finalizer.finished = true;
+                    if (finalizer.timerId) {
+                        clearTimeout(finalizer.timerId);
+                        finalizer.timerId = null;
+                    }
+                    self._pendingVideoMuteFinalizers.delete(finalizer);
+                    try {
+                        dispatch();
+                    } catch (err) {
+                        self._log('Error dispatching videoMuted finalizer:', err);
+                    }
+                    if (typeof onFinish === 'function') {
+                        try {
+                            onFinish(true);
+                        } catch (err) {
+                            self._log('Error running mute finalizer onFinish handler:', err);
+                        }
+                    }
+                },
+                cancel() {
+                    if (finalizer.finished) return;
+                    finalizer.finished = true;
+                    if (finalizer.timerId) {
+                        clearTimeout(finalizer.timerId);
+                        finalizer.timerId = null;
+                    }
+                    self._pendingVideoMuteFinalizers.delete(finalizer);
+                    if (typeof onFinish === 'function') {
+                        try {
+                            onFinish(false);
+                        } catch (err) {
+                            self._log('Error running mute finalizer cancel handler:', err);
+                        }
+                    }
+                }
+            };
+
+            finalizer.timerId = setTimeout(() => finalizer.flush(), delayMs);
+            this._pendingVideoMuteFinalizers.add(finalizer);
+            return finalizer;
+        }
+
+        /**
+         * Cancel any pending delayed mute broadcasts.
+         * @private
+         */
+        _cancelPendingVideoMuteFinalizers() {
+            if (!this._pendingVideoMuteFinalizers || this._pendingVideoMuteFinalizers.size === 0) {
+                return;
+            }
+            const pending = Array.from(this._pendingVideoMuteFinalizers);
+            for (const finalizer of pending) {
+                try {
+                    finalizer.flush();
+                } catch (err) {
+                    this._log('Error flushing pending mute finalizer:', err);
+                }
+            }
+        }
+
+        /**
+         * Clear all outbound track monitors.
+         * @private
+         */
+        _clearAllVideoTrackMonitors() {
+            if (!this._outboundVideoMonitors || this._outboundVideoMonitors.size === 0) {
+                if (this._pendingVideoMuteFinalizers && this._pendingVideoMuteFinalizers.size) {
+                    this._cancelPendingVideoMuteFinalizers();
+                }
+                return;
+            }
+            this._cancelPendingVideoMuteFinalizers();
+            const tracks = Array.from(this._outboundVideoMonitors.keys());
+            for (const track of tracks) {
+                this._unmonitorOutboundVideoTrack(track, { skipSend: true });
+            }
+            this._outboundVideoMonitors.clear();
+            if (this._pendingVideoMuteFinalizers) {
+                this._pendingVideoMuteFinalizers.clear();
+            }
+        }
+
+        /**
+         * Synchronize current mute states with a newly opened data channel.
+         * @private
+         * @param {Object} connection
+         */
+        _syncVideoMuteStateToConnection(connection) {
+            if (!connection || connection.type !== 'publisher') return;
+            if (!this.state || !this.state.publishing) return;
+            if (!this._outboundVideoMonitors || this._outboundVideoMonitors.size === 0) return;
+
+            for (const monitor of this._outboundVideoMonitors.values()) {
+                const track = monitor.track;
+                const muted = typeof monitor.lastState === 'boolean'
+                    ? monitor.lastState
+                    : this._isTrackEffectivelyMuted(track);
+                this._sendVideoMutedState(track, muted, connection.uuid, 'sync');
+            }
+        }
+
+        /**
          * Get connection by UUID and optional type
          * @private
          * @param {string} uuid - Peer UUID
@@ -1830,6 +2312,9 @@
                     } catch (e) {
                         this._log('Failed to send publisher info:', e.message || e);
                     }
+
+                    // Sync current mute state so the viewer blanks immediately if needed
+                    this._syncVideoMuteStateToConnection(connection);
                 }
                 
                 // Start ping monitoring based on role/flags
@@ -1953,6 +2438,28 @@
                     } else if (msg.bye) {
                         this._log('Received bye message via data channel');
                         this._handleBye({ UUID: connection.uuid });
+                    } else if (Object.prototype.hasOwnProperty.call(msg, 'videoMuted')) {
+                        const detail = {
+                            muted: !!msg.videoMuted,
+                            trackId: (typeof msg.trackId === 'string') ? msg.trackId : null,
+                            streamID: connection.streamID || null,
+                            uuid: connection.uuid,
+                            connectionType: connection.type || 'unknown',
+                            timestamp: Date.now(),
+                            raw: msg
+                        };
+                        this._emit('remoteVideoMuteState', detail);
+                        this._emit('dataReceived', {
+                            data: msg,
+                            uuid: connection.uuid,
+                            streamID: connection.streamID
+                        });
+                        // Typo compatibility: also emit 'dataRecieved'
+                        this._emit('dataRecieved', {
+                            data: msg,
+                            uuid: connection.uuid,
+                            streamID: connection.streamID
+                        });
                     } else if (msg.pipe) {
                         // Handle generic data sent via pipe protocol
                         this._log('Received generic data via pipe');
@@ -2115,6 +2622,9 @@
                         });
                     }
                 }
+                
+                // Apply encoding preferences (bitrate/codec) if requested
+                await this._applyEncodingPreferencesToConnection(connection);
 
                 // Create offer
                 const offer = await connection.pc.createOffer();
@@ -2127,6 +2637,565 @@
                 this._log('Error creating offer:', error.message);
                 throw error;
             }
+        }
+
+        /**
+         * Apply codec and encoding preferences to outgoing senders for a connection.
+         * @private
+         * @param {Object} connection - Connection object
+         * @param {Object} [configOverride] - Optional override config
+         */
+        async _applyEncodingPreferencesToConnection(connection, configOverride) {
+            if (!connection || !connection.pc || connection.type !== 'publisher') return;
+
+            const config = configOverride || this._publishMediaConfig;
+            if (!config) return;
+            if (typeof connection.pc.getSenders !== 'function') return;
+
+            const senders = connection.pc.getSenders();
+            if (!Array.isArray(senders) || senders.length === 0) return;
+
+            const transceivers = (typeof connection.pc.getTransceivers === 'function')
+                ? connection.pc.getTransceivers()
+                : [];
+
+            const tasks = [];
+
+            for (const sender of senders) {
+                if (!sender || !sender.track) continue;
+                const kind = sender.track.kind;
+                if (!kind) continue;
+
+                const mediaConfig = kind === 'video' ? config.video : (kind === 'audio' ? config.audio : null);
+                if (!mediaConfig) continue;
+
+                if (mediaConfig.codec) {
+                    this._preferCodecOnSender(sender, mediaConfig.codec, kind, transceivers);
+                }
+
+                if (typeof mediaConfig.maxBitrate === 'number' ||
+                    typeof mediaConfig.minBitrate === 'number' ||
+                    typeof mediaConfig.maxFramerate === 'number' ||
+                    typeof mediaConfig.scaleResolutionDownBy === 'number') {
+                    tasks.push(this._applySenderEncodingParameters(sender, mediaConfig, kind));
+                }
+            }
+
+            if (tasks.length > 0) {
+                await Promise.all(
+                    tasks.map(task => task.catch(error => this._log('Failed to apply RTP sender parameters:', error)))
+                );
+            }
+        }
+
+        /**
+         * Reset any explicit encoding preferences applied to a connection.
+         * @private
+         * @param {Object} connection - Connection to reset
+         */
+        async _resetEncodingPreferencesForConnection(connection) {
+            if (!connection || !connection.pc || typeof connection.pc.getSenders !== 'function') return;
+
+            const senders = connection.pc.getSenders();
+            if (!Array.isArray(senders) || senders.length === 0) return;
+
+            const tasks = senders.map(sender => this._clearSenderEncodingParameters(sender));
+            await Promise.all(
+                tasks.map(task => task.catch(error => this._log('Failed to clear RTP sender parameters:', error)))
+            );
+        }
+
+        /**
+         * Prioritize a codec on a transceiver when supported.
+         * @private
+         * @param {RTCRtpSender} sender - Sender to adjust
+         * @param {string} codecName - Desired codec (e.g. "VP9", "video/VP9")
+         * @param {string} kind - "audio" or "video"
+         * @param {RTCRtpTransceiver[]} transceivers - Available transceivers
+         */
+        _preferCodecOnSender(sender, codecName, kind, transceivers = []) {
+            if (!sender || !codecName) return;
+            if (typeof RTCRtpSender === 'undefined' || typeof RTCRtpSender.getCapabilities !== 'function') return;
+
+            const normalizedCodec = this._normalizeCodecName(codecName, kind);
+            if (!normalizedCodec) return;
+
+            const transceiver = Array.isArray(transceivers)
+                ? transceivers.find(t => t && t.sender === sender)
+                : null;
+
+            if (!transceiver || typeof transceiver.setCodecPreferences !== 'function') return;
+
+            const capabilities = RTCRtpSender.getCapabilities(kind);
+            if (!capabilities || !Array.isArray(capabilities.codecs) || capabilities.codecs.length === 0) return;
+
+            const preferenceList = this._buildCodecPreferenceList(capabilities.codecs, normalizedCodec);
+            if (!preferenceList) return;
+
+            try {
+                transceiver.setCodecPreferences(preferenceList);
+                this._log(`Applied codec preference ${normalizedCodec} for ${kind}`);
+            } catch (error) {
+                this._log('Codec preference application failed:', error);
+            }
+        }
+
+        /**
+         * Apply RTP sender encoding parameters such as bitrate.
+         * @private
+         * @param {RTCRtpSender} sender - Sender to adjust
+         * @param {Object} mediaConfig - Media configuration
+         * @param {string} kind - "audio" or "video"
+         */
+        async _applySenderEncodingParameters(sender, mediaConfig, kind) {
+            if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') return;
+
+            let params;
+            try {
+                params = sender.getParameters();
+            } catch (error) {
+                this._log('Unable to read RTP sender parameters:', error);
+                return;
+            }
+
+            if (!params) return;
+
+            if (!Array.isArray(params.encodings) || params.encodings.length === 0) {
+                params.encodings = [{}];
+            }
+
+            const encoding = params.encodings[0];
+            let changed = false;
+
+            if (typeof mediaConfig.maxBitrate === 'number') {
+                encoding.maxBitrate = mediaConfig.maxBitrate;
+                changed = true;
+            }
+
+            if (typeof mediaConfig.minBitrate === 'number') {
+                encoding.minBitrate = mediaConfig.minBitrate;
+                changed = true;
+            }
+
+            if (typeof mediaConfig.maxFramerate === 'number') {
+                encoding.maxFramerate = mediaConfig.maxFramerate;
+                changed = true;
+            }
+
+            if (typeof mediaConfig.scaleResolutionDownBy === 'number') {
+                encoding.scaleResolutionDownBy = mediaConfig.scaleResolutionDownBy;
+                changed = true;
+            }
+
+            if (!changed) return;
+
+            try {
+                await sender.setParameters(params);
+            } catch (error) {
+                this._log('Failed to set RTP sender parameters:', error);
+            }
+        }
+
+        /**
+         * Clear custom RTP sender parameters.
+         * @private
+         * @param {RTCRtpSender} sender - Sender to reset
+         */
+        async _clearSenderEncodingParameters(sender) {
+            if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') return;
+
+            let params;
+            try {
+                params = sender.getParameters();
+            } catch (error) {
+                this._log('Unable to read RTP sender parameters:', error);
+                return;
+            }
+
+            if (!params || !Array.isArray(params.encodings) || params.encodings.length === 0) return;
+
+            const encoding = params.encodings[0];
+            let changed = false;
+
+            for (const key of ['maxBitrate', 'minBitrate', 'maxFramerate', 'scaleResolutionDownBy']) {
+                if (encoding[key] !== undefined) {
+                    delete encoding[key];
+                    changed = true;
+                }
+            }
+
+            if (!changed) return;
+
+            try {
+                await sender.setParameters(params);
+            } catch (error) {
+                this._log('Failed to clear RTP sender parameters:', error);
+            }
+        }
+
+        /**
+         * Normalize codec name to match the format used by WebRTC capabilities.
+         * @private
+         * @param {string} codecName - Codec identifier
+         * @param {string} kind - "audio" or "video"
+         * @returns {string|null} Normalized codec string
+         */
+        _normalizeCodecName(codecName, kind) {
+            if (typeof codecName !== 'string') return null;
+
+            let normalized = codecName.trim();
+            if (!normalized) return null;
+
+            if (normalized.startsWith('/')) {
+                normalized = `${kind}${normalized}`;
+            } else if (!normalized.includes('/')) {
+                normalized = `${kind}/${normalized}`;
+            }
+
+            const parts = normalized.split('/');
+            if (parts.length !== 2) return null;
+
+            const prefix = parts[0].toLowerCase();
+            const suffix = parts[1].trim().toUpperCase();
+
+            if (!prefix || !suffix) return null;
+
+            return `${prefix}/${suffix}`;
+        }
+
+        /**
+         * Build a codec preference list prioritizing the requested codec.
+         * @private
+         * @param {Array} codecs - Codec capabilities
+         * @param {string} requestedCodec - Normalized codec string
+         * @returns {Array|null} Reordered codec list
+         */
+        _buildCodecPreferenceList(codecs, requestedCodec) {
+            if (!Array.isArray(codecs) || !requestedCodec) return null;
+
+            const target = requestedCodec.toLowerCase();
+            const primary = [];
+            const associated = [];
+            const fallback = [];
+
+            for (const codec of codecs) {
+                const mime = (codec && codec.mimeType ? codec.mimeType : '').toLowerCase();
+                if (!mime) {
+                    fallback.push(codec);
+                    continue;
+                }
+
+                if (mime === target) {
+                    primary.push(codec);
+                } else if (mime.endsWith('/rtx')) {
+                    associated.push(codec);
+                } else {
+                    fallback.push(codec);
+                }
+            }
+
+            if (primary.length === 0) return null;
+
+            const payloads = new Set(
+                primary
+                    .map(codec => codec && codec.preferredPayloadType)
+                    .filter(value => value !== undefined)
+            );
+
+            const orderedAssociated = associated.filter(codec => {
+                if (!codec || !codec.sdpFmtpLine) return false;
+                const match = codec.sdpFmtpLine.match(/apt=(\d+)/);
+                if (!match) return false;
+                return payloads.has(Number(match[1]));
+            });
+
+            return [...primary, ...orderedAssociated, ...fallback];
+        }
+
+        /**
+         * Apply local media constraints such as resolution.
+         * @private
+         * @param {MediaStream} stream - Local media stream
+         * @param {Object} config - Media configuration
+         */
+        async _applyLocalMediaPreferences(stream, config) {
+            if (!stream || !config) return;
+
+            const videoSettings = config.video;
+            if (!videoSettings || !videoSettings.resolution) return;
+
+            const constraints = {};
+            const { width, height, frameRate } = videoSettings.resolution;
+
+            if (typeof width === 'number' && width > 0) {
+                constraints.width = { ideal: width };
+            }
+
+            if (typeof height === 'number' && height > 0) {
+                constraints.height = { ideal: height };
+            }
+
+            if (typeof frameRate === 'number' && frameRate > 0) {
+                constraints.frameRate = { ideal: frameRate };
+            }
+
+            if (Object.keys(constraints).length === 0) return;
+
+            const videoTracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
+            for (const track of videoTracks) {
+                if (!track || typeof track.applyConstraints !== 'function') continue;
+                try {
+                    await track.applyConstraints(constraints);
+                    this._log('Applied video constraints:', constraints);
+                } catch (error) {
+                    this._log('Failed to apply video constraints:', error);
+                }
+            }
+        }
+
+        /**
+         * Extract and normalize publisher media preferences from options.
+         * Accepts the same shape as publish() options (media/webrtc).
+         * @private
+         * @param {Object} options - Options provided to publish()/updatePublisherMedia()
+         * @returns {Object|null} Normalized configuration
+         */
+        async _extractPublisherMediaOptions(options = {}) {
+            if (!options) return null;
+
+            const sources = [];
+            if (options.media && typeof options.media === 'object') sources.push(options.media);
+            if (options.mediaSettings && typeof options.mediaSettings === 'object') sources.push(options.mediaSettings);
+            if (options.webrtc && typeof options.webrtc === 'object') sources.push(options.webrtc);
+            if (options.encoding && typeof options.encoding === 'object') sources.push(options.encoding);
+
+            const collected = { video: {}, audio: {} };
+            let hasValues = false;
+
+            const applySource = (source) => {
+                if (!source || typeof source !== 'object') return;
+
+                if (typeof source.video === 'object' && source.video !== null) {
+                    if (source.video.codec !== undefined) { collected.video.codec = source.video.codec; hasValues = true; }
+                    if (source.video.bitrate !== undefined) { collected.video.maxBitrate = source.video.bitrate; hasValues = true; }
+                    if (source.video.maxBitrate !== undefined) { collected.video.maxBitrate = source.video.maxBitrate; hasValues = true; }
+                    if (source.video.minBitrate !== undefined) { collected.video.minBitrate = source.video.minBitrate; hasValues = true; }
+                    if (source.video.resolution !== undefined) { collected.video.resolution = source.video.resolution; hasValues = true; }
+                    if (source.video.width !== undefined) { collected.video.width = source.video.width; hasValues = true; }
+                    if (source.video.height !== undefined) { collected.video.height = source.video.height; hasValues = true; }
+                    if (source.video.frameRate !== undefined) { collected.video.frameRate = source.video.frameRate; hasValues = true; }
+                }
+
+                if (source.videoCodec !== undefined) { collected.video.codec = source.videoCodec; hasValues = true; }
+                if (source.videoBitrate !== undefined) { collected.video.maxBitrate = source.videoBitrate; hasValues = true; }
+                if (source.videoResolution !== undefined) { collected.video.resolution = source.videoResolution; hasValues = true; }
+                if (source.videoWidth !== undefined) { collected.video.width = source.videoWidth; hasValues = true; }
+                if (source.videoHeight !== undefined) { collected.video.height = source.videoHeight; hasValues = true; }
+                if (source.videoFrameRate !== undefined) { collected.video.frameRate = source.videoFrameRate; hasValues = true; }
+
+                if (typeof source.audio === 'object' && source.audio !== null) {
+                    if (source.audio.codec !== undefined) { collected.audio.codec = source.audio.codec; hasValues = true; }
+                    if (source.audio.bitrate !== undefined) { collected.audio.maxBitrate = source.audio.bitrate; hasValues = true; }
+                    if (source.audio.maxBitrate !== undefined) { collected.audio.maxBitrate = source.audio.maxBitrate; hasValues = true; }
+                    if (source.audio.minBitrate !== undefined) { collected.audio.minBitrate = source.audio.minBitrate; hasValues = true; }
+                }
+
+                if (source.audioCodec !== undefined) { collected.audio.codec = source.audioCodec; hasValues = true; }
+                if (source.audioBitrate !== undefined) { collected.audio.maxBitrate = source.audioBitrate; hasValues = true; }
+            };
+
+            sources.forEach(applySource);
+
+            if (options.videoCodec !== undefined) { collected.video.codec = options.videoCodec; hasValues = true; }
+            if (options.videoBitrate !== undefined) { collected.video.maxBitrate = options.videoBitrate; hasValues = true; }
+            if (options.videoResolution !== undefined) { collected.video.resolution = options.videoResolution; hasValues = true; }
+            if (options.videoWidth !== undefined) { collected.video.width = options.videoWidth; hasValues = true; }
+            if (options.videoHeight !== undefined) { collected.video.height = options.videoHeight; hasValues = true; }
+            if (options.videoFrameRate !== undefined) { collected.video.frameRate = options.videoFrameRate; hasValues = true; }
+            if (options.audioCodec !== undefined) { collected.audio.codec = options.audioCodec; hasValues = true; }
+            if (options.audioBitrate !== undefined) { collected.audio.maxBitrate = options.audioBitrate; hasValues = true; }
+
+            if (!hasValues) return null;
+
+            const normalized = {};
+
+            const videoConfig = {};
+            if (collected.video.codec !== undefined) {
+                videoConfig.codec = collected.video.codec;
+            }
+            const parsedVideoBitrate = this._parseBitrateSetting(collected.video.maxBitrate);
+            if (parsedVideoBitrate !== null) {
+                videoConfig.maxBitrate = parsedVideoBitrate;
+            }
+            const parsedVideoMinBitrate = this._parseBitrateSetting(collected.video.minBitrate);
+            if (parsedVideoMinBitrate !== null) {
+                videoConfig.minBitrate = parsedVideoMinBitrate;
+            }
+            const parsedResolution = this._parseResolutionSetting(
+                collected.video.resolution,
+                collected.video.width,
+                collected.video.height,
+                collected.video.frameRate
+            );
+            if (parsedResolution) {
+                videoConfig.resolution = parsedResolution;
+            }
+
+            if (Object.keys(videoConfig).length > 0) {
+                normalized.video = videoConfig;
+            }
+
+            const audioConfig = {};
+            if (collected.audio.codec !== undefined) {
+                audioConfig.codec = collected.audio.codec;
+            }
+            const parsedAudioBitrate = this._parseBitrateSetting(collected.audio.maxBitrate);
+            if (parsedAudioBitrate !== null) {
+                audioConfig.maxBitrate = parsedAudioBitrate;
+            }
+            const parsedAudioMinBitrate = this._parseBitrateSetting(collected.audio.minBitrate);
+            if (parsedAudioMinBitrate !== null) {
+                audioConfig.minBitrate = parsedAudioMinBitrate;
+            }
+
+            if (Object.keys(audioConfig).length > 0) {
+                normalized.audio = audioConfig;
+            }
+
+            return Object.keys(normalized).length > 0 ? normalized : null;
+        }
+
+        /**
+         * Parse bitrate values provided in various formats and normalize to bits per second.
+         * @private
+         * @param {number|string} value - Bitrate input
+         * @returns {number|null} Normalized bitrate in bps
+         */
+        _parseBitrateSetting(value) {
+            if (value === undefined || value === null || value === '') return null;
+
+            let numericValue = value;
+            let multiplier = 1;
+
+            if (typeof value === 'string') {
+                const trimmed = value.trim().toLowerCase();
+                const match = trimmed.match(/^([\d.]+)\s*(kbps|mbps|bps|k|m)?$/);
+                if (!match) return null;
+                numericValue = parseFloat(match[1]);
+                if (Number.isNaN(numericValue)) return null;
+
+                const unit = match[2];
+                if (!unit) {
+                    multiplier = numericValue < 10000 ? 1000 : 1;
+                } else if (unit === 'mbps' || unit === 'm') {
+                    multiplier = 1000000;
+                } else if (unit === 'kbps' || unit === 'k') {
+                    multiplier = 1000;
+                } else {
+                    multiplier = 1;
+                }
+            } else if (typeof value === 'number') {
+                numericValue = value;
+                if (numericValue < 0) return null;
+                if (numericValue > 0 && numericValue < 10000) {
+                    multiplier = 1000;
+                }
+            } else {
+                return null;
+            }
+
+            const result = Math.round(numericValue * multiplier);
+            return result > 0 ? result : null;
+        }
+
+        /**
+         * Normalize resolution values expressed as objects or strings.
+         * @private
+         * @param {Object|string} resolution - Resolution descriptor
+         * @param {number} [widthAlias] - Explicit width override
+         * @param {number} [heightAlias] - Explicit height override
+         * @param {number} [frameRateAlias] - Explicit frame rate override
+         * @returns {Object|null} Normalized resolution constraints
+         */
+        _parseResolutionSetting(resolution, widthAlias, heightAlias, frameRateAlias) {
+            let width = widthAlias !== undefined ? Number(widthAlias) : undefined;
+            let height = heightAlias !== undefined ? Number(heightAlias) : undefined;
+            let frameRate = frameRateAlias !== undefined ? Number(frameRateAlias) : undefined;
+
+            if (resolution && typeof resolution === 'string') {
+                const trimmed = resolution.trim().toLowerCase();
+                const match = trimmed.match(/(\d+)x(\d+)(?:@([\d.]+))?/);
+                if (match) {
+                    width = Number(match[1]);
+                    height = Number(match[2]);
+                    if (match[3] !== undefined) {
+                        frameRate = Number(match[3]);
+                    }
+                }
+            } else if (resolution && typeof resolution === 'object') {
+                if (resolution.width !== undefined) width = Number(resolution.width);
+                if (resolution.height !== undefined) height = Number(resolution.height);
+                if (resolution.frameRate !== undefined) frameRate = Number(resolution.frameRate);
+                if (resolution.fps !== undefined && frameRate === undefined) frameRate = Number(resolution.fps);
+            }
+
+            const normalized = {};
+            if (Number.isFinite(width) && width > 0) normalized.width = Math.round(width);
+            if (Number.isFinite(height) && height > 0) normalized.height = Math.round(height);
+            if (Number.isFinite(frameRate) && frameRate > 0) normalized.frameRate = Math.round(frameRate);
+
+            return Object.keys(normalized).length > 0 ? normalized : null;
+        }
+
+        /**
+         * Merge existing media configuration with updates.
+         * @private
+         * @param {Object|null} baseConfig - Existing configuration
+         * @param {Object|null} updateConfig - New configuration
+         * @returns {Object|null} Merged configuration
+         */
+        _mergeMediaConfigs(baseConfig, updateConfig) {
+            const result = {};
+
+            if (baseConfig && baseConfig.video) {
+                result.video = { ...baseConfig.video };
+            }
+            if (baseConfig && baseConfig.audio) {
+                result.audio = { ...baseConfig.audio };
+            }
+
+            if (updateConfig) {
+                const mergeSection = (sectionName) => {
+                    const updateSection = updateConfig[sectionName];
+                    if (updateSection === null) {
+                        delete result[sectionName];
+                        return;
+                    }
+                    if (!updateSection || typeof updateSection !== 'object') return;
+
+                    if (!result[sectionName]) {
+                        result[sectionName] = {};
+                    }
+
+                    for (const [key, value] of Object.entries(updateSection)) {
+                        if (value === undefined) continue;
+                        if (value === null) {
+                            delete result[sectionName][key];
+                        } else {
+                            result[sectionName][key] = value;
+                        }
+                    }
+
+                    if (Object.keys(result[sectionName]).length === 0) {
+                        delete result[sectionName];
+                    }
+                };
+
+                mergeSection('video');
+                mergeSection('audio');
+            }
+
+            return Object.keys(result).length > 0 ? result : null;
         }
 
         /**
@@ -4215,6 +5284,10 @@
                 this.localStream.addTrack(track);
             }
 
+            if (track.kind === 'video') {
+                this._monitorOutboundVideoTrack(track);
+            }
+
             // Add to all publisher connections (connections we're publishing to)
             for (const [uuid, connections] of this.connections) {
                 const connection = connections.publisher;
@@ -4228,6 +5301,7 @@
                     try {
                         // Add the track and create a new offer
                         connection.pc.addTrack(track, stream);
+                        await this._applyEncodingPreferencesToConnection(connection);
                         
                         // Renegotiate connection
                         const offer = await connection.pc.createOffer();
@@ -4276,6 +5350,10 @@
         async removeTrack(track) {
             if (!track) {
                 throw new Error('Track is required');
+            }
+
+            if (track.kind === 'video') {
+                this._unmonitorOutboundVideoTrack(track, { forceMuted: true });
             }
 
             // Remove from local stream
@@ -4352,10 +5430,18 @@
                 throw new Error('Tracks must be of the same kind (audio/video)');
             }
 
+            if (oldTrack.kind === 'video') {
+                this._unmonitorOutboundVideoTrack(oldTrack, { skipSend: true });
+            }
+
             // Update local stream
             if (this.localStream) {
                 this.localStream.removeTrack(oldTrack);
                 this.localStream.addTrack(newTrack);
+            }
+
+            if (newTrack.kind === 'video') {
+                this._monitorOutboundVideoTrack(newTrack);
             }
 
             // Replace in all connections
@@ -4369,6 +5455,7 @@
                         try {
                             // Use replaceTrack for seamless switching (no renegotiation needed)
                             await sender.replaceTrack(newTrack);
+                            await this._applyEncodingPreferencesToConnection(connection);
                             this._log(`Replaced ${newTrack.kind} track in connection: ${uuid}`);
                             
                             // Emit event
@@ -4387,6 +5474,66 @@
 
             // Stop the old track
             oldTrack.stop();
+        }
+
+        /**
+         * Update media encoding preferences for the active publisher.
+         * Accepts the same structure as publish() media options.
+         * @param {Object} options - Media configuration overrides
+         * @returns {Promise<Object|null>} Applied configuration
+         */
+        async updatePublisherMedia(options = {}) {
+            if (options === null || options === undefined) {
+                return this._publishMediaConfig;
+            }
+
+            const shouldClear = options.clear === true || options.reset === true || options.media === null;
+            if (shouldClear) {
+                this._publishMediaConfig = null;
+
+                if (this.state && this.state.publishing && this.connections && typeof this.connections.values === 'function') {
+                    const tasks = [];
+                    for (const connectionGroup of this.connections.values()) {
+                        if (connectionGroup && connectionGroup.publisher) {
+                            tasks.push(this._resetEncodingPreferencesForConnection(connectionGroup.publisher));
+                        }
+                    }
+                    if (tasks.length > 0) {
+                        await Promise.all(
+                            tasks.map(task => task.catch(error => this._log('Failed to reset encoding preferences:', error)))
+                        );
+                    }
+                }
+
+                return null;
+            }
+
+            const newConfig = await this._extractPublisherMediaOptions(options);
+            if (!newConfig) {
+                return this._publishMediaConfig;
+            }
+
+            this._publishMediaConfig = this._mergeMediaConfigs(this._publishMediaConfig, newConfig);
+
+            if (this.localStream) {
+                await this._applyLocalMediaPreferences(this.localStream, this._publishMediaConfig);
+            }
+
+            if (this.state && this.state.publishing && this.connections && typeof this.connections.values === 'function') {
+                const tasks = [];
+                for (const connectionGroup of this.connections.values()) {
+                    if (connectionGroup && connectionGroup.publisher) {
+                        tasks.push(this._applyEncodingPreferencesToConnection(connectionGroup.publisher));
+                    }
+                }
+                if (tasks.length > 0) {
+                    await Promise.all(
+                        tasks.map(task => task.catch(error => this._log('Failed to update encoding preferences:', error)))
+                    );
+                }
+            }
+
+            return this._publishMediaConfig;
         }
 
         /**
