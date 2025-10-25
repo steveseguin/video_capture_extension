@@ -5606,8 +5606,19 @@ function setupPublisherFunctions() {
 
             // Cleanup routine (idempotent)
             let cleaned = false;
+            let domObserver = null;
+            let domDisconnectTimer = null;
+            const clearDomDisconnectTimer = () => {
+                if (domDisconnectTimer) {
+                    clearTimeout(domDisconnectTimer);
+                    domDisconnectTimer = null;
+                }
+            };
             const cleanup = async () => {
                 if (cleaned) return; cleaned = true;
+                clearDomDisconnectTimer();
+                try { if (domObserver) domObserver.disconnect(); } catch (e) {}
+                domObserver = null;
                 try { sendBye(); } catch (e) {}
                 // Give DC a beat to flush before closing
                 await new Promise(r => setTimeout(r, 50));
@@ -5646,13 +5657,20 @@ function setupPublisherFunctions() {
                 // Video element lifecycle
                 video.addEventListener('ended', cleanup, { once: true });
                 // Detect DOM removal
-                const mo = new MutationObserver(() => {
-                    if (!video.isConnected) {
-                        mo.disconnect();
-                        cleanup();
+                domObserver = new MutationObserver(() => {
+                    const stillConnected = video.isConnected || document.contains(video);
+                    if (stillConnected) {
+                        clearDomDisconnectTimer();
+                        return;
+                    }
+                    if (!domDisconnectTimer) {
+                        domDisconnectTimer = setTimeout(() => {
+                            domDisconnectTimer = null;
+                            try { cleanup(); } catch (e) { cleanup(); }
+                        }, 1000);
                     }
                 });
-                mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+                domObserver.observe(document.documentElement || document.body, { childList: true, subtree: true });
             } catch (e) {
                 // best-effort only
             }
