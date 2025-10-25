@@ -1,4 +1,4 @@
-// VDO.Ninja SDK v1.3.8
+// VDO.Ninja SDK v1.3.15
 /**
  * VDO.Ninja SDK - OFFICIAL SDK FOR VDO.NINJA WEBSOCKET API
  * Copyright (C) 2025 Steve Seguin and contributors
@@ -327,7 +327,7 @@
          * @returns {string} Current SDK version
          */
         static get VERSION() {
-            return '1.3.8';
+            return '1.3.15';
         }
         
         /**
@@ -550,6 +550,18 @@
             }
             this._pendingRoomID = options.roomid || options.roomID || null;  // Support both cases
             
+            // Convenience event aliases for common patterns (Node-style)
+            // sdk.on('event', handler), sdk.off('event', handler), sdk.once('event', handler)
+            this.on = (evt, handler) => { try { this.addEventListener(evt, handler); } catch (e) {} return this; };
+            this.off = (evt, handler) => { try { this.removeEventListener(evt, handler); } catch (e) {} return this; };
+            this.once = (evt, handler) => {
+                try {
+                    const wrap = (e) => { this.removeEventListener(evt, wrap); handler(e); };
+                    this.addEventListener(evt, wrap);
+                } catch (e) {}
+                return this;
+            };
+            
             // State management
             this.state = {
                 connected: false,
@@ -567,6 +579,9 @@
             this._failedViewerConnections = new Map(); // Track failed connections for retry
             this._intentionalDisconnect = false; // Flag for intentional disconnections
             this._passwordHash = null;  // Cached hash for streamID
+            this._passwordHashPromise = null; // Tracks in-flight hash computation
+            this._passwordHashKey = null; // Password+salt signature for cached hash
+            this._passwordHashPromiseKey = null; // Signature for in-flight hash
             this._viewHandlers = new Map();
             this._sessionIDs = {};
             this._remoteSessionIDs = {};
@@ -724,6 +739,12 @@
                 } else {
                     this.password = this._sanitizePassword(options.password);
                 }
+            }
+            
+            // Handle common-but-ignored options gracefully with guidance
+            if (options.datamode !== undefined) {
+                console.warn('[VDONinja SDK] connect({ datamode }) is not used. Establish data channels via announce() (publisher) and/or view() (viewer).');
+                this._emit('alert', { message: 'connect({ datamode }) has no effect. Use announce()/view() to create data channels.' });
             }
             
             return new Promise((resolve, reject) => {
@@ -1027,6 +1048,12 @@
 
             this._log('Joining room:', room, 'with hash:', hashedRoom);
 
+            // Handle common-but-ignored options gracefully with guidance
+            if (options.role !== undefined) {
+                console.warn('[VDONinja SDK] joinRoom({ role }) is not used. Your role is determined by calling announce() (publisher) and/or view() (viewer).');
+                this._emit('alert', { message: 'joinRoom({ role }) is ignored. Use announce() to publish and view() to view.' });
+            }
+
             // Join room without streamID in the message
             const joinMessage = {
                 request: "joinroom",
@@ -1197,6 +1224,11 @@
         async announce(options = {}) {
             if (!this.state.connected) {
                 throw new Error('Not connected to signaling server');
+            }
+            // Warn on unexpected fields
+            if (options.role !== undefined) {
+                console.warn('[VDONinja SDK] announce({ role }) is not used. Remove role and just call announce().');
+                this._emit('alert', { message: 'announce({ role }) is ignored. Remove role and call announce({ streamID }).' });
             }
 
             // Persist label if provided for downstream DC open
@@ -1394,16 +1426,24 @@
                     }
                 }
                 
+                // Normalize legacy dataOnly into audio/video flags for pending view
+                const normalizedOptions = (() => {
+                    if (options && options.dataOnly === true) {
+                        return { ...options, audio: false, video: false };
+                    }
+                    return options || {};
+                })();
+
                 // Track pending view so we know we initiated this
                 this._pendingViews.set(streamID, {
-                    options: options,
+                    options: normalizedOptions,
                     timestamp: Date.now(),
                     hashedStreamID: hashedStreamID  // Store the hashed version for comparison
                 });
                 
                 // Store view options for potential reconnection
                 this._lastViewOptions = this._lastViewOptions || {};
-                this._lastViewOptions[streamID] = options;
+                this._lastViewOptions[streamID] = normalizedOptions;
 
                 // Send view request first (don't create connection yet)
                 const viewRequest = {
@@ -1763,7 +1803,8 @@
                 // Send track preferences for viewers
                 if (connection.type === 'viewer' && connection.viewPreferences) {
                     try {
-                        this._sendDataInternal(connection.viewPreferences, connection.uuid, null, 'publisher');
+                        // Send strictly via the viewer-side data channel to the publisher (VDO.Ninja compatibility)
+                        this._sendDataInternal(connection.viewPreferences, connection.uuid, null, 'viewer');
                         this._log('Sent track preferences:', connection.viewPreferences);
                     } catch (error) {
                         this._log('Failed to send preferences:', error.message);
@@ -1797,7 +1838,9 @@
                 this._emit('dataChannelOpen', {
                     uuid: connection.uuid,
                     type: connection.type,
-                    streamID: connection.streamID
+                    streamID: connection.streamID,
+                    // Provide a 'data' alias for handlers expecting event.detail.data
+                    data: { uuid: connection.uuid, type: connection.type, streamID: connection.streamID }
                 });
             };
             
@@ -1927,6 +1970,12 @@
                                 uuid: connection.uuid,
                                 streamID: connection.streamID
                             });
+                            // Typo compatibility: also emit 'dataRecieved'
+                            this._emit('dataRecieved', {
+                                data: msg.pipe,
+                                uuid: connection.uuid,
+                                streamID: connection.streamID
+                            });
                         }
                     } else if (msg.iceRestartRequest) {
                         this._log('Received ICE restart request via data channel');
@@ -1986,6 +2035,13 @@
 
             channel.onclose = () => {
                 this._log('Data channel closed');
+                try {
+                    this._emit('dataChannelClose', {
+                        uuid: connection.uuid,
+                        type: connection.type,
+                        streamID: connection.streamID
+                    });
+                } catch (e) {}
             };
         }
 
@@ -2209,6 +2265,15 @@
                 connection.pc.close();
             }
 
+            // Emit peerDisconnected for this connection
+            try {
+                this._emit('peerDisconnected', {
+                    uuid: connection.uuid,
+                    type: connection.type,
+                    streamID: connection.streamID
+                });
+            } catch (e) {}
+
             // For viewer connections, check if we should retry
             if (connection.type === 'viewer' && connection.streamID && !this._intentionalDisconnect) {
                 this._log('Viewer connection failed for stream:', connection.streamID);
@@ -2339,17 +2404,17 @@
             } else if (msg.request === "play") {
                 await this._handlePlayRequest(msg);
             } else if (msg.request === "listing") {
-                this._handleListing(msg);
+                await this._handleListing(msg);
             } else if (msg.request === "videoaddedtoroom") {
-                this._handleVideoAddedToRoom(msg);
+                await this._handleVideoAddedToRoom(msg);
             } else if (msg.request === "someonejoined") {
-                this._handleSomeoneJoined(msg);
+                await this._handleSomeoneJoined(msg);
             } else if (msg.request === "error") {
                 this._handleError(msg);
             } else if (msg.request === "alert") {
                 this._handleAlert(msg);
             } else if (msg.request === "transferred") {
-                this._handleTransferred(msg);
+                await this._handleTransferred(msg);
             } else if (msg.request === "offerSDP") {
                 this._handleOfferSDPRequest(msg);
             } else if (msg.rejected) {
@@ -2399,57 +2464,58 @@
         async _handleOfferSDP(msg) {
             this._log('Handling offer from:', msg.UUID, 'session:', msg.session);
 
-            // Normalize streamID to original (strip hash suffix if present)
-            const cleanStreamID = this._stripHashFromStreamID(msg.streamID);
+            if (msg.streamID !== undefined) {
+                await this._ensurePasswordHash();
+            }
 
-            // Check if we have an existing viewer connection with different session
+            // Normalize streamID to original (strip hash suffix if present), if provided
+            const cleanStreamID = (msg.streamID !== undefined) ? this._stripHashFromStreamID(msg.streamID) : undefined;
+
+            // Reuse existing viewer connection when renegotiating; create only if needed
             const existingConnections = this.connections.get(msg.UUID);
-            if (existingConnections && existingConnections.viewer) {
-                const existingConnection = existingConnections.viewer;
-                if (existingConnection.streamID === cleanStreamID && 
-                    existingConnection.session && existingConnection.session !== msg.session) {
-                    this._log('Found existing connection with different session:', existingConnection.session, 'vs', msg.session);
-                    this._log('Closing old connection due to session mismatch');
-                    
-                    if (existingConnection.pc) {
-                        existingConnection.pc.close();
-                    }
-                    delete existingConnections.viewer;
-                }
+            let connection = (existingConnections && existingConnections.viewer) ? existingConnections.viewer : null;
+
+            if (connection && connection.session && msg.session && connection.session !== msg.session) {
+                // Session mismatch: close and drop, then recreate
+                this._log('Found existing connection with different session:', connection.session, 'vs', msg.session);
+                this._log('Closing old connection due to session mismatch');
+                try { connection.pc && connection.pc.close(); } catch (e) {}
+                if (existingConnections) delete existingConnections.viewer;
+                connection = null;
             }
 
-            // Create new connection
-            const connection = await this._createConnection(msg.UUID, 'viewer');
-            connection.streamID = cleanStreamID;
-            connection.session = msg.session;  // Store the publisher's session
-            
-            // Check if we have pending view preferences for this streamID
-            const pendingView = this._pendingViews.get(cleanStreamID);
-            if (pendingView && pendingView.options) {
-                connection.viewPreferences = {
-                    audio: pendingView.options.audio !== false,
-                    video: pendingView.options.video !== false
-                };
-                if (pendingView.options.label) {
-                    connection.viewPreferences.info = {
-                        label: pendingView.options.label
+            if (!connection) {
+                // Create new connection
+                connection = await this._createConnection(msg.UUID, 'viewer');
+                // Only set streamID if supplied in this offer; otherwise leave as default/previous
+                if (cleanStreamID !== undefined) connection.streamID = cleanStreamID;
+                connection.session = msg.session;  // Store the publisher's session
+
+                // Attach view preferences if we initiated a view for this streamID
+                const pendingView = cleanStreamID !== undefined ? this._pendingViews.get(cleanStreamID) : null;
+                if (pendingView && pendingView.options) {
+                    connection.viewPreferences = {
+                        audio: pendingView.options.audio !== false,
+                        video: pendingView.options.video !== false
                     };
+                    if (pendingView.options.label) {
+                        connection.viewPreferences.info = { label: pendingView.options.label };
+                    }
+                    connection.viewOptions = pendingView.options;
+                    this._log('Attached view preferences to connection:', connection.viewPreferences);
+                } else {
+                    // Default to requesting both audio and video if no preferences specified
+                    connection.viewPreferences = { audio: true, video: true };
+                    connection.viewOptions = { audio: true, video: true };
+                    this._log('No pending view found, using default preferences:', connection.viewPreferences);
                 }
-                // Store viewOptions for reconnection handling
-                connection.viewOptions = pendingView.options;
-                this._log('Attached view preferences to connection:', connection.viewPreferences);
+
+                this._log(`Created viewer connection for offer - UUID: ${msg.UUID}, streamID: ${connection.streamID}, session: ${msg.session}`);
             } else {
-                // Default to requesting both audio and video if no preferences specified
-                connection.viewPreferences = {
-                    audio: true,
-                    video: true
-                };
-                // Store default viewOptions for reconnection handling
-                connection.viewOptions = { audio: true, video: true };
-                this._log('No pending view found, using default preferences:', connection.viewPreferences);
+                // Existing connection: keep streamID and preferences as-is; ensure session recorded
+                if (!connection.session && msg.session) connection.session = msg.session;
+                if (!connection.streamID && cleanStreamID !== undefined) connection.streamID = cleanStreamID;
             }
-            
-            this._log(`Created viewer connection for offer - UUID: ${msg.UUID}, streamID: ${cleanStreamID}, session: ${msg.session}`);
 
             try {
                 // Set remote description
@@ -2784,6 +2850,8 @@
         async _handlePlayRequest(msg) {
             this._log('Received play request for:', msg.streamID, 'from:', msg.UUID);
 
+            await this._ensurePasswordHash();
+
             // Normalize requested streamID (strip hash suffix if present)
             const requestedStream = this._stripHashFromStreamID(msg.streamID);
 
@@ -2858,23 +2926,100 @@
         }
 
         /**
+         * Ensure cached password hash is ready before stripping hashed stream IDs
+         * @private
+         * @returns {Promise<void>}
+         */
+        async _ensurePasswordHash() {
+            if (this.password === false || this.password === null) {
+                this._passwordHash = null;
+                this._passwordHashKey = null;
+                this._passwordHashPromise = null;
+                this._passwordHashPromiseKey = null;
+                return;
+            }
+
+            const effectivePassword = this._getEffectivePassword();
+            if (effectivePassword === null) {
+                this._passwordHash = null;
+                this._passwordHashKey = null;
+                this._passwordHashPromise = null;
+                this._passwordHashPromiseKey = null;
+                return;
+            }
+
+            const saltForHash = this.salt;
+            const hashKey = `${effectivePassword}:${saltForHash}`;
+
+            if (this._passwordHashKey && this._passwordHashKey !== hashKey) {
+                this._passwordHash = null;
+                this._passwordHashKey = null;
+            }
+
+            if (this._passwordHash && this._passwordHashKey === hashKey && typeof this._passwordHash === 'string' && this._passwordHash.length > 0) {
+                return;
+            }
+
+            if (this._passwordHashPromise) {
+                try {
+                    await this._passwordHashPromise;
+                } catch (error) {
+                    this._log('Failed to ensure password hash:', error);
+                }
+                if (this._passwordHash && this._passwordHashKey === hashKey && typeof this._passwordHash === 'string' && this._passwordHash.length > 0) {
+                    return;
+                }
+            }
+
+            const passwordForHash = effectivePassword;
+
+            const promise = this._generateHash(passwordForHash + saltForHash, 6);
+
+            this._passwordHashPromise = promise;
+            this._passwordHashPromiseKey = hashKey;
+
+            try {
+                const hash = await promise;
+                if (this._passwordHashPromise === promise && this._passwordHashPromiseKey === hashKey) {
+                    this._passwordHash = hash;
+                    this._passwordHashKey = hashKey;
+                }
+            } catch (error) {
+                this._log('Failed to precompute password hash:', error);
+            } finally {
+                if (this._passwordHashPromise === promise) {
+                    this._passwordHashPromise = null;
+                    this._passwordHashPromiseKey = null;
+                }
+            }
+        }
+
+        /**
          * Strip hash suffix from stream ID
          * @private
          * @param {string} streamID - Stream ID potentially with hash suffix
          * @returns {string} Clean stream ID without hash
          */
         _stripHashFromStreamID(streamID) {
-            if (!streamID || typeof streamID !== 'string') return streamID;
-            
-            // Hash suffixes are 6 characters long and are lowercase hex
-            if (streamID.length > 6) {
-                const lastSix = streamID.slice(-6);
-                // Check if last 6 chars are hex (0-9, a-f)
-                if (/^[a-f0-9]{6}$/.test(lastSix)) {
-                    return streamID.slice(0, -6);
-                }
+            if (!streamID || typeof streamID !== 'string') {
+                return streamID;
             }
-            
+
+            // Only strip when we have a cached password hash to compare against
+            if (!this._passwordHash || typeof this._passwordHash !== 'string') {
+                return streamID;
+            }
+
+            const suffixLength = this._passwordHash.length;
+            if (suffixLength === 0 || streamID.length <= suffixLength) {
+                return streamID;
+            }
+
+            const possibleHash = streamID.slice(-suffixLength);
+            if (possibleHash === this._passwordHash) {
+                return streamID.slice(0, -suffixLength);
+            }
+
             return streamID;
         }
 
@@ -2883,8 +3028,10 @@
          * @private
          * @param {Object} msg - Listing message
          */
-        _handleListing(msg) {
+        async _handleListing(msg) {
             this._log('Processing listing');
+
+            await this._ensurePasswordHash();
 
             // Emit internal event for room joined
             this._emit('_roomJoined');
@@ -2953,7 +3100,9 @@
          * @private
          * @param {Object} msg - Video added message
          */
-        _handleVideoAddedToRoom(msg) {
+        async _handleVideoAddedToRoom(msg) {
+            await this._ensurePasswordHash();
+
             const cleanStreamID = this._stripHashFromStreamID(msg.streamID);
             this._log('Video added to room:', cleanStreamID);
 
@@ -3011,7 +3160,9 @@
          * @private
          * @param {Object} msg - User joined message
          */
-        _handleSomeoneJoined(msg) {
+        async _handleSomeoneJoined(msg) {
+            await this._ensurePasswordHash();
+
             const cleanStreamID = msg.streamID ? this._stripHashFromStreamID(msg.streamID) : null;
             this._log('Someone joined:', cleanStreamID || msg.UUID);
 
@@ -3023,6 +3174,8 @@
             });
 
             this._emit('userJoined', msg);
+            // Backward-compatibility alias for common handler name typo
+            this._emit('someoneJoined', msg);
         }
 
         /**
@@ -3091,7 +3244,7 @@
          * @private
          * @param {Object} msg - Transferred message
          */
-        _handleTransferred(msg) {
+        async _handleTransferred(msg) {
             this._log('Transferred to new room');
             // Similar to listing, but indicates we were moved
             this._emit('transferred', {
@@ -3100,7 +3253,7 @@
                 raw: msg
             });
             // Also emit as listing for compatibility
-            this._handleListing(msg);
+            await this._handleListing(msg);
         }
 
         /**
@@ -3255,6 +3408,12 @@
             }
 
             this._emit('bye', msg);
+            // Also emit peerDisconnected for convenience
+            try {
+                this._emit('peerDisconnected', {
+                    uuid: msg.UUID
+                });
+            } catch (e) {}
         }
 
         /**
@@ -3283,6 +3442,12 @@
             }
 
             this._emit('hangup', msg);
+            // Also emit peerDisconnected for convenience
+            try {
+                this._emit('peerDisconnected', {
+                    uuid: msg.UUID
+                });
+            } catch (e) {}
         }
 
         /**
@@ -3297,8 +3462,24 @@
             const cleanMsg = { ...msg };
             delete cleanMsg.__fallback;
             
+            // If this is a pub/sub subscription update, mirror DC handling to emit peer events
+            try {
+                if (cleanMsg && cleanMsg.pipe && typeof cleanMsg.pipe === 'object') {
+                    const t = cleanMsg.pipe.type;
+                    if (t === 'subscribe' || t === 'unsubscribe') {
+                        this._handleDataChannelMessage(cleanMsg.pipe, msg.UUID);
+                    }
+                }
+            } catch (e) {}
+            
             // Emit the same events as regular data channel messages
             this._emit('dataReceived', {
+                data: cleanMsg.pipe,
+                uuid: msg.UUID,
+                fallback: true
+            });
+            // Typo compatibility
+            this._emit('dataRecieved', {
                 data: cleanMsg.pipe,
                 uuid: msg.UUID,
                 fallback: true
@@ -3407,6 +3588,26 @@
          * @returns {string} Random stream ID
          */
         _generateStreamID() {
+            try {
+                // Prefer cryptographically strong randomness when available
+                if (typeof crypto !== 'undefined') {
+                    if (typeof crypto.randomUUID === 'function') {
+                        // Use UUID v4 and trim; ensures good entropy and distribution
+                        return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+                    }
+                    if (typeof crypto.getRandomValues === 'function') {
+                        const bytes = new Uint8Array(9); // 9 bytes ~ 12 base36 chars
+                        crypto.getRandomValues(bytes);
+                        let out = '';
+                        for (let i = 0; i < bytes.length; i++) {
+                            // Map byte to base36 (0-9a-z) using lower 5 bits to reduce bias
+                            out += (bytes[i] & 31).toString(36);
+                        }
+                        return out;
+                    }
+                }
+            } catch (e) { /* fall back below */ }
+            // Fallback
             return Math.random().toString(36).substring(2, 15);
         }
 
@@ -4395,32 +4596,63 @@
             const msg = { pipe: data };
             let allowFallback = false;  // Default to false for true P2P
             // Default to any-channel; SDK will try publisher first, then viewer.
-            // Do NOT assign the entire target as a preference (target may be a UUID or options object).
             let preference = 'any';
-            
+
+            // Guidance if sending before DC is ready
+            const anyOpenDC = (() => {
+                for (const [, conns] of this.connections || []) {
+                    for (const t of ['viewer', 'publisher']) {
+                        if (conns[t] && conns[t].dataChannel && conns[t].dataChannel.readyState === 'open') return true;
+                    }
+                }
+                return false;
+            })();
+            if (!this.state || !this.state.connected) {
+                console.warn('[VDONinja SDK] sendData() called while not connected. Call connect() first.');
+                this._emit('error', { error: 'sendData() called while not connected. Call connect() before sending data.' });
+            } else if (!anyOpenDC && !(target && target.allowFallback)) {
+                console.warn('[VDONinja SDK] No open data channels yet. Wait for "dataChannelOpen" before sendData(), or pass { allowFallback: true } to use WebSocket fallback.');
+                this._emit('alert', { message: 'No open data channels yet. Wait for dataChannelOpen or set allowFallback: true.' });
+            }
+
             // Handle different parameter formats
             if (typeof target === 'string') {
                 // Simple UUID string - use default preference
                 return this._sendDataInternal(msg, target, null, preference, allowFallback);
             } else if (typeof target === 'object' && target !== null) {
-                // Extract options
-                if (target.hasOwnProperty('allowFallback')) {
-                    allowFallback = target.allowFallback;
+                const t = { ...target };
+
+                // Normalize common variants/mistakes
+                if (t.UUID && !t.uuid) t.uuid = t.UUID;
+                if (t.channel && !t.preference) t.preference = t.channel; // alias
+                if (t.prefer && !t.preference) t.preference = t.prefer;
+                if (t.type === 'pcs') t.type = 'publisher';
+                if (t.type === 'rpcs') t.type = 'viewer';
+                if ((t.type === 'any' || t.type === 'all') && !t.uuid && !t.streamID) {
+                    // Users sometimes put route into type; treat as preference
+                    if (!t.preference) t.preference = t.type;
+                    delete t.type;
                 }
-                if (target.hasOwnProperty('preference')) {
-                    preference = target.preference;
+                if (t.preference === 'pcs') t.preference = 'publisher';
+                if (t.preference === 'rpcs') t.preference = 'viewer';
+
+                if (Object.prototype.hasOwnProperty.call(t, 'allowFallback')) {
+                    allowFallback = t.allowFallback;
                 }
-                
+                if (Object.prototype.hasOwnProperty.call(t, 'preference')) {
+                    preference = t.preference;
+                }
+
                 // Options object
-                if (target.uuid && !target.type && !target.streamID) {
+                if (t.uuid && !t.type && !t.streamID) {
                     // Simple UUID case
-                    return this._sendDataInternal(msg, target.uuid, null, preference, allowFallback);
-                } else if (target.uuid || target.type || target.streamID) {
+                    return this._sendDataInternal(msg, t.uuid, null, preference, allowFallback);
+                } else if (t.uuid || t.type || t.streamID) {
                     // Complex filtering - need to handle streamID case
-                    if (target.streamID && !target.uuid) {
+                    if (t.streamID && !t.uuid) {
                         // Get all connections for this streamID and send using preference
-                        const connections = this._getConnections({ streamID: target.streamID, type: target.type });
-                        
+                        const connections = this._getConnections({ streamID: t.streamID, type: t.type });
+
                         // Group by UUID to handle preference correctly
                         const connectionsByUuid = new Map();
                         for (const conn of connections) {
@@ -4429,23 +4661,24 @@
                             }
                             connectionsByUuid.get(conn.uuid).push(conn);
                         }
-                        
+
                         let sent = false;
-                        for (const [uuid, conns] of connectionsByUuid) {
+                        for (const [uuid] of connectionsByUuid) {
                             // For each UUID, send according to preference
                             if (this._sendDataInternal(msg, uuid, null, preference, allowFallback)) {
                                 sent = true;
                             }
                         }
-                        
+
                         return sent;
                     } else {
-                        // UUID with optional type
-                        return this._sendDataInternal(msg, target.uuid, target.type, preference, allowFallback);
+                        // UUID with optional type (type must be 'viewer' or 'publisher')
+                        const normalizedType = (t.type === 'viewer' || t.type === 'publisher') ? t.type : null;
+                        return this._sendDataInternal(msg, t.uuid, normalizedType, preference, allowFallback);
                     }
                 }
             }
-            
+
             // Default: send to all with preference
             return this._sendDataInternal(msg, null, null, preference, allowFallback);
         }
@@ -4546,6 +4779,17 @@
          */
         getSubscriptions() {
             return this._subscriptions ? Array.from(this._subscriptions) : [];
+        }
+
+        /**
+         * Get current subscriptions for a connected peer by UUID
+         * @param {string} uuid - Peer UUID
+         * @returns {Array<string>} List of channels the peer is subscribed to (empty if none/unknown)
+         */
+        getPeerSubscriptions(uuid) {
+            if (!uuid || !this._peerSubscriptions) return [];
+            const set = this._peerSubscriptions.get(uuid);
+            return set ? Array.from(set) : [];
         }
 
         /**
@@ -4656,15 +4900,33 @@
                     this._peerSubscriptions = new Map();
                 }
                 
+                const list = Array.isArray(data.channels)
+                    ? data.channels
+                    : (data.channels != null ? [data.channels] : []);
                 if (data.type === 'subscribe') {
                     const peerSubs = this._peerSubscriptions.get(uuid) || new Set();
-                    data.channels.forEach(ch => peerSubs.add(ch));
+                    list.forEach(ch => peerSubs.add(ch));
                     this._peerSubscriptions.set(uuid, peerSubs);
+                    // Emit non-breaking peer subscription event
+                    try {
+                        this._emit('peerSubscribed', {
+                            uuid,
+                            channels: list.slice(),
+                            allChannels: Array.from(peerSubs)
+                        });
+                    } catch (e) {}
                 } else {
-                    const peerSubs = this._peerSubscriptions.get(uuid);
-                    if (peerSubs) {
-                        data.channels.forEach(ch => peerSubs.delete(ch));
-                    }
+                    const peerSubs = this._peerSubscriptions.get(uuid) || new Set();
+                    list.forEach(ch => peerSubs.delete(ch));
+                    this._peerSubscriptions.set(uuid, peerSubs);
+                    // Emit non-breaking peer unsubscription event
+                    try {
+                        this._emit('peerUnsubscribed', {
+                            uuid,
+                            channels: list.slice(),
+                            allChannels: Array.from(peerSubs)
+                        });
+                    } catch (e) {}
                 }
                 return;
             }
@@ -4723,6 +4985,8 @@
 
             // Pass through other messages
             this._emit('dataReceived', { data, uuid });
+            // Typo compatibility
+            this._emit('dataRecieved', { data, uuid });
         }
 
         /**
@@ -4907,11 +5171,160 @@
             }
 
             // View stream
+            // Support legacy dataOnly: true (maps to audio:false, video:false)
+            const audio = options && options.dataOnly === true ? false : options.audio;
+            const video = options && options.dataOnly === true ? false : options.video;
             return await this.view(options.streamID, {
-                audio: options.audio,
-                video: options.video,
+                audio,
+                video,
                 label: options.label
             });
+        }
+
+        /**
+         * Auto-connect mesh helper
+         * - Connects, joins a room, announces a streamID, and views peers in the room.
+         * - mode 'half' (default): single data channel per pair (best for data-only). Views only a deterministic subset to avoid dual connections.
+         * - mode 'full': dual connections per pair (needed for audio/video exchange).
+         * 
+         * Usage:
+         *   sdk.autoConnect('roomName')
+         *   sdk.autoConnect({ room: 'roomName', mode: 'full', streamID: 'me', view: { audio:true, video:true } })
+         *   const ctl = sdk.autoConnect(room, (item) => item.label === 'chat'); // returns controller with stop()
+         * 
+         * @param {string|Object} roomOrOptions - Room name or options object
+         * @param {Function|RegExp|string|Object} [maybeFilter] - Optional filter when using shorthand
+         * @returns {Promise<{ stop: Function, streamID: string }>} Controller
+         */
+        async autoConnect(roomOrOptions, maybeFilter) {
+            const defaults = {
+                mode: 'half', // 'half' | 'full'
+                view: undefined, // e.g., { audio:false, video:false }
+                label: undefined,
+                password: undefined,
+                streamID: undefined,
+                filter: undefined
+            };
+            let options;
+            if (typeof roomOrOptions === 'string') {
+                options = { ...defaults, room: roomOrOptions, filter: maybeFilter };
+            } else {
+                options = { ...defaults, ...(roomOrOptions || {}) };
+            }
+
+            if (!options || !options.room) {
+                throw new Error('autoConnect: room is required');
+            }
+
+            // Resolve view defaults based on mode if not provided
+            const viewDefaults = options.mode === 'full' ? { audio: true, video: true } : { audio: false, video: false };
+            const viewOptions = options.view ? { ...viewDefaults, ...options.view } : viewDefaults;
+
+            // Track streams we have already viewed to avoid duplicates
+            const viewed = new Set();
+            const connecting = new Set();
+
+            // Declare myStreamID upfront to avoid TDZ in event handlers
+            let myStreamID = null;
+
+            // Build filter function
+            const normalizeItem = (item) => {
+                if (typeof item === 'string') return { streamID: item };
+                return { streamID: item?.streamID, uuid: item?.UUID || item?.uuid, label: item?.label };
+            };
+            const userFilter = options.filter;
+            const applyFilter = (item) => {
+                const norm = normalizeItem(item);
+                if (!norm.streamID) return false;
+                if (norm.streamID === myStreamID) return false;
+
+                // User-provided filter
+                if (typeof userFilter === 'function') {
+                    try { if (!userFilter(norm)) return false; } catch (e) { /* ignore */ }
+                } else if (userFilter instanceof RegExp) {
+                    if (!userFilter.test(norm.streamID)) return false;
+                } else if (typeof userFilter === 'string') {
+                    if (norm.streamID !== userFilter) return false;
+                } else if (userFilter && typeof userFilter === 'object') {
+                    if (Array.isArray(userFilter.include) && !userFilter.include.includes(norm.streamID)) return false;
+                    if (Array.isArray(userFilter.exclude) && userFilter.exclude.includes(norm.streamID)) return false;
+                    if (userFilter.prefix && typeof userFilter.prefix === 'string' && !norm.streamID.startsWith(userFilter.prefix)) return false;
+                }
+
+                // Mode-based deterministic selection to avoid dual connections in 'half'
+                if (options.mode === 'half') {
+                    // Connect only if remote streamID is lexicographically less than ours
+                    // Ensures exactly one DC per pair across the mesh
+                    if (!(norm.streamID < myStreamID)) return false;
+                }
+                return true;
+            };
+
+            const tryView = async (sid) => {
+                if (!sid || viewed.has(sid) || connecting.has(sid)) return;
+                viewed.add(sid); // optimistic to prevent duplicate calls
+                connecting.add(sid);
+                try {
+                    await this.quickView({ streamID: sid, audio: viewOptions.audio, video: viewOptions.video, label: viewOptions.label });
+                } catch (e) {
+                    // If it fails immediately, allow a future retry on event triggers
+                    viewed.delete(sid);
+                } finally {
+                    connecting.delete(sid);
+                }
+            };
+
+            const handleListing = async (event) => {
+                if (typeof myStreamID !== 'string') return; // Wait until after we announce
+                const list = event?.detail?.list;
+                if (Array.isArray(list)) {
+                    for (const item of list) {
+                        if (applyFilter(item)) await tryView(typeof item === 'string' ? item : item.streamID);
+                    }
+                } else if (event?.detail?.streamID) {
+                    // Per-item listing form
+                    const sid = event.detail.streamID;
+                    if (applyFilter({ streamID: sid, uuid: event.detail.uuid, label: event.detail.label })) await tryView(sid);
+                }
+            };
+
+            const handleNew = async (event) => {
+                if (typeof myStreamID !== 'string') return;
+                const sid = event?.detail?.streamID;
+                if (applyFilter({ streamID: sid })) await tryView(sid);
+            };
+
+            // Wire listeners BEFORE joining/announcing to not miss initial listing/events
+            this.addEventListener('listing', handleListing);
+            this.addEventListener('videoaddedtoroom', handleNew);
+
+            // Connect and join
+            if (!this.state.connected) {
+                await this.connect();
+            }
+            if (!this.state.roomJoined || this.state.room !== options.room) {
+                await this.joinRoom({ room: options.room, password: options.password });
+            }
+
+            // Announce our presence (data-only by default); returns our final plaintext streamID
+            myStreamID = await this.announce({ streamID: options.streamID, label: options.label });
+
+            // After announcing, proactively process any already-known streams
+            try {
+                if (this.streams && this.streams.size > 0) {
+                    for (const [sid, data] of this.streams) {
+                        if (applyFilter({ streamID: sid, uuid: data?.uuid })) await tryView(sid);
+                    }
+                }
+            } catch (e) { /* ignore */ }
+
+            // Return controller to stop auto-connect
+            const stop = () => {
+                this.removeEventListener('listing', handleListing);
+                this.removeEventListener('videoaddedtoroom', handleNew);
+            };
+
+            return { stop, streamID: myStreamID };
         }
 
         // ============================================================================
@@ -4926,7 +5339,6 @@
         // Viewing/Playing aliases
         play(streamID, options) { return this.view(streamID, options); }
         watch(streamID, options) { return this.view(streamID, options); }
-        subscribe(streamID, options) { return this.view(streamID, options); }
         startViewing(streamID, options) { return this.view(streamID, options); }
         
         // Publishing/Streaming aliases  
@@ -4939,7 +5351,6 @@
         stop(streamID) { return this.stopViewing(streamID); }
         stopPlaying(streamID) { return this.stopViewing(streamID); }
         stopWatching(streamID) { return this.stopViewing(streamID); }
-        unsubscribe(streamID) { return this.stopViewing(streamID); }
         
         // Stop publishing aliases
         stopStreaming() { return this.stopPublishing(); }
@@ -4971,7 +5382,14 @@
         // Quick method aliases
         quickPlay(options) { return this.quickView(options); }
         quickWatch(options) { return this.quickView(options); }
-        quickSubscribe(options) { return this.quickView(options); }
+        // Quick subscribe helper: defaults to dataOnly unless explicitly overridden
+        quickSubscribe(options = {}) {
+            const opts = { ...options };
+            if (!('dataOnly' in opts) && !('audio' in opts) && !('video' in opts)) {
+                opts.dataOnly = true;
+            }
+            return this.quickView(opts);
+        }
         
         quickStream(options) { return this.quickPublish(options); }
         quickBroadcast(options) { return this.quickPublish(options); }
