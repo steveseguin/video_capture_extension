@@ -5440,15 +5440,84 @@ const checkSDK = setInterval(() => {
 }, 100);
 
 function setupPublisherFunctions() {
+    const debugLog = (...args) => {
+        try { console.log('[VDO Debug]', new Date().toISOString(), ...args); } catch (e) {}
+    };
+    const DOM_DISCONNECT_GRACE_MS = 2000;
+    const VIDEO_TRACK_GRACE_MS = 4000;
+    const AUDIO_TRACK_GRACE_MS = 2000;
+    const describeTracks = (stream) => {
+        try {
+            if (!stream || typeof stream.getTracks !== 'function') return [];
+            return stream.getTracks().map((track) => ({
+                kind: track.kind,
+                id: track.id,
+                label: track.label,
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+            }));
+        } catch (e) {
+            return [{ error: e?.message || String(e) }];
+        }
+    };
+    const snapshotVideoState = (video) => {
+        if (!video) return { error: 'no video element' };
+        const rect = (() => {
+            try {
+                const r = video.getBoundingClientRect();
+                return { width: r.width, height: r.height, top: r.top, left: r.left };
+            } catch (e) {
+                return null;
+            }
+        })();
+        return {
+            dataset: (() => { try { return { ...video.dataset }; } catch (e) { return {}; } })(),
+            isConnected: !!video?.isConnected,
+            currentSrc: video?.currentSrc || video?.src || null,
+            readyState: video?.readyState,
+            muted: !!video?.muted,
+            paused: !!video?.paused,
+            width: video?.videoWidth,
+            height: video?.videoHeight,
+            rect,
+            srcObjectTracks: describeTracks(video?.srcObject)
+        };
+    };
+    const resolveCleanupReason = (input) => {
+        if (!input) return 'unspecified';
+        if (typeof input === 'string') return input;
+        if (input && input.type) return `event:${input.type}`;
+        if (input instanceof Error) return `error:${input.message}`;
+        return typeof input === 'object' ? JSON.stringify(input, null, 2).slice(0, 200) : String(input);
+    };
+
     // Create the publisher function
     window.publishVideoToVDO = async function(videoId, streamId, roomId, title, password, server, mic) {
         try {
             // console.log('Publishing:', { videoId, streamId, roomId, title });
             
-            const video = document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
+            let video = document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
             if (!video) {
                 throw new Error('Video element not found');
             }
+            debugLog('publishVideoToVDO:start', { videoId, streamId, videoState: snapshotVideoState(video) });
+            const getPublisherRecord = () => {
+                try {
+                    return window.vdoPublishers && window.vdoPublishers[streamId];
+                } catch (e) {
+                    return null;
+                }
+            };
+            const isVideoRendering = () => {
+                try {
+                    if (!video) return false;
+                    if (!video.isConnected && !document.contains(video)) return false;
+                    if (video.readyState >= 2 && ((video.videoWidth || 0) > 0 || (video.videoHeight || 0) > 0)) return true;
+                    if (!video.paused && video.currentTime > 0) return true;
+                } catch (e) {}
+                return false;
+            };
             
             // Capture stream
             let stream;
@@ -5473,7 +5542,177 @@ function setupPublisherFunctions() {
                 stream = canvas.captureStream(30);
             }
             // Keep a reference to the original captured media stream (video source)
-            const baseVideoStream = stream;
+            let baseVideoStream = stream;
+            debugLog('baseVideoStream:initialized', { streamId, videoId, tracks: describeTracks(baseVideoStream) });
+            const videoSignature = {
+                datasetId: (() => { try { return video?.dataset?.vdoCaptureId || null; } catch (e) { return null; } })(),
+                currentSrc: (() => { try { return video?.currentSrc || video?.src || null; } catch (e) { return null; } })(),
+                videoLabels: (() => {
+                    try {
+                        return describeTracks(baseVideoStream)
+                            .filter(t => t.kind === 'video' && t.label)
+                            .map(t => t.label);
+                    } catch (e) {
+                        return [];
+                    }
+                })()
+            };
+            let awaitingReplacement = false;
+            const attachedVideoElements = new WeakSet();
+
+            function matchesVideoSignature(candidate) {
+                if (!candidate || candidate === video) return false;
+                try {
+                    if (videoSignature.datasetId && candidate.dataset && candidate.dataset.vdoCaptureId === videoSignature.datasetId) {
+                        return true;
+                    }
+                } catch (e) {}
+                try {
+                    const candidateSrc = candidate.currentSrc || candidate.src || null;
+                    if (videoSignature.currentSrc && candidateSrc && candidateSrc === videoSignature.currentSrc) {
+                        return true;
+                    }
+                } catch (e) {}
+                try {
+                    if (videoSignature.videoLabels && videoSignature.videoLabels.length > 0) {
+                        let candidateLabels = [];
+                        if (candidate.srcObject instanceof MediaStream) {
+                            const tracks = candidate.srcObject.getVideoTracks ? candidate.srcObject.getVideoTracks() : [];
+                            if (tracks && tracks.length > 0) {
+                                candidateLabels = tracks.map(track => track && track.label).filter(Boolean);
+                            }
+                        }
+                        if (candidateLabels.some(label => videoSignature.videoLabels.includes(label))) {
+                            return true;
+                        }
+                    }
+                } catch (e) {}
+                return false;
+            }
+
+            function findReplacementVideoElement() {
+                try {
+                    const videos = document.querySelectorAll('video');
+                    for (const candidate of videos) {
+                        if (matchesVideoSignature(candidate)) {
+                            return candidate;
+                        }
+                    }
+                } catch (e) {}
+                return null;
+            }
+
+            const pendingRestores = new Set();
+            async function handleVideoElementReplacement(newVideoElement, trigger) {
+                if (!newVideoElement || newVideoElement === video) return false;
+                if (pendingRestores.has(newVideoElement)) return false;
+                pendingRestores.add(newVideoElement);
+                debugLog('videoReplacement:detected', {
+                    streamId,
+                    videoId,
+                    trigger,
+                    hasDataset: !!newVideoElement?.dataset?.vdoCaptureId
+                });
+                try {
+                    if (videoSignature.datasetId) {
+                        try { newVideoElement.dataset.vdoCaptureId = videoSignature.datasetId; } catch (e) {}
+                    }
+                    video = newVideoElement;
+                    attachVideoElementListeners(newVideoElement);
+                    awaitingReplacement = false;
+                    clearDomDisconnectTimer('replacement-detected');
+
+                    let replacementStream = null;
+                    try {
+                        if (typeof newVideoElement.captureStream === 'function') {
+                            replacementStream = newVideoElement.captureStream(30);
+                        } else if (typeof newVideoElement.mozCaptureStream === 'function') {
+                            replacementStream = newVideoElement.mozCaptureStream(30);
+                        } else if (newVideoElement.srcObject instanceof MediaStream) {
+                            replacementStream = newVideoElement.srcObject;
+                        }
+                    } catch (error) {
+                        debugLog('videoReplacement:captureError', {
+                            streamId,
+                            videoId,
+                            error: error?.message || String(error)
+                        });
+                    }
+
+                    if (!replacementStream) {
+                        debugLog('videoReplacement:noStreamAvailable', { streamId, videoId });
+                        return false;
+                    }
+
+                    baseVideoStream = replacementStream;
+                    attachBaseStreamListeners(replacementStream);
+
+                    let replaced = false;
+                    const newVideoTracks = replacementStream.getVideoTracks ? replacementStream.getVideoTracks() : [];
+                    if (newVideoTracks && newVideoTracks.length > 0) {
+                        try {
+                            await replaceVideoTrack(newVideoTracks[0]);
+                            replaced = true;
+                        } catch (error) {
+                            debugLog('videoReplacement:replaceVideoError', { streamId, videoId, error: error?.message || String(error) });
+                        }
+                    }
+                    const newAudioTracks = replacementStream.getAudioTracks ? replacementStream.getAudioTracks() : [];
+                    if (newAudioTracks && newAudioTracks.length > 0) {
+                        try {
+                            await replaceAudioTrack(newAudioTracks[0]);
+                        } catch (error) {
+                            debugLog('videoReplacement:replaceAudioError', { streamId, videoId, error: error?.message || String(error) });
+                        }
+                    }
+
+                    if (replaced) {
+                        clearVideoLossTimer('replacement-success');
+                        debugLog('videoReplacement:replacedTrack', { streamId, videoId });
+                        return true;
+                    }
+                    debugLog('videoReplacement:replaceSkipped', { streamId, videoId });
+                    return false;
+                } finally {
+                    pendingRestores.delete(newVideoElement);
+                }
+            }
+
+            async function attemptAutoRestore(trigger) {
+                const candidate = findReplacementVideoElement();
+                if (!candidate) {
+                    debugLog('videoRestore:noCandidate', { streamId, videoId, trigger });
+                    return false;
+                }
+                const success = await handleVideoElementReplacement(candidate, trigger);
+                if (success) {
+                    debugLog('videoRestore:success', { streamId, videoId, trigger });
+                    return true;
+                }
+                debugLog('videoRestore:failed', { streamId, videoId, trigger });
+                return false;
+            }
+            let replaceVideoTrack = async () => {};
+            let replaceAudioTrack = async () => {};
+            let attachBaseStreamListeners = () => {};
+            const hasLiveVideoTrack = () => {
+                try {
+                    const rec = getPublisherRecord();
+                    const candidates = [];
+                    if (rec && rec.stream) candidates.push(rec.stream);
+                    if (baseVideoStream) candidates.push(baseVideoStream);
+                    if (video && video.srcObject instanceof MediaStream) candidates.push(video.srcObject);
+                    for (const s of candidates) {
+                        if (s && typeof s.getVideoTracks === 'function') {
+                            const tracks = s.getVideoTracks();
+                            if (tracks && tracks.some(track => track && track.readyState === 'live')) {
+                                return true;
+                            }
+                        }
+                    }
+                } catch (e) {}
+                return false;
+            };
             
             // Create SDK instance
             let vdo;
@@ -5591,6 +5830,18 @@ function setupPublisherFunctions() {
             // Publish the stream with options
             // console.log('Publishing with options:', publishOptions);
             await vdo.publish(stream, publishOptions);
+            debugLog('publishVideoToVDO:published', {
+                streamId,
+                videoId,
+                publishOptions: {
+                    room: publishOptions?.room,
+                    streamID: publishOptions?.streamID,
+                    screenshare: publishOptions?.screenshare,
+                    video: publishOptions?.video,
+                    audio: publishOptions?.audio
+                },
+                streamTracks: describeTracks(stream)
+            });
             
             // Helper to send a polite bye over data channel
             const sendBye = () => {
@@ -5608,15 +5859,105 @@ function setupPublisherFunctions() {
             let cleaned = false;
             let domObserver = null;
             let domDisconnectTimer = null;
-            const clearDomDisconnectTimer = () => {
+            let videoLossTimer = null;
+            const clearVideoLossTimer = (source) => {
+                if (videoLossTimer) {
+                    clearTimeout(videoLossTimer);
+                    videoLossTimer = null;
+                    try {
+                        const rec = getPublisherRecord();
+                        if (rec) rec._replaceTimer = null;
+                    } catch (e) {}
+                    debugLog('videoLossTimer:cleared', { streamId, videoId, source });
+                }
+            };
+            const scheduleVideoLossTimer = (origin, trackId) => {
+                clearVideoLossTimer('reschedule');
+                const state = { streamId, videoId, origin, trackId, delayMs: VIDEO_TRACK_GRACE_MS };
+                try {
+                    const rec = getPublisherRecord();
+                    videoLossTimer = setTimeout(async () => {
+                        videoLossTimer = null;
+                        try {
+                            const latestRec = getPublisherRecord();
+                            if (latestRec) latestRec._replaceTimer = null;
+                        } catch (e) {}
+                        const lossState = {
+                            streamId,
+                            videoId,
+                            origin,
+                            trackId,
+                            domTimerActive: !!domDisconnectTimer,
+                            hasLiveVideo: hasLiveVideoTrack(),
+                            isRendering: isVideoRendering()
+                        };
+                        if (await attemptAutoRestore('videoLossTimer')) {
+                            return;
+                        }
+                        if (domDisconnectTimer) {
+                            debugLog('videoLossTimer:domPending', lossState);
+                            return;
+                        }
+                        if (lossState.hasLiveVideo || lossState.isRendering) {
+                            debugLog('videoLossTimer:skipActiveVideo', lossState);
+                            return;
+                        }
+                        debugLog('videoLossTimer:cleanup', lossState);
+                        try { cleanup('video track grace timer expired'); } catch (e) { cleanup(e); }
+                    }, VIDEO_TRACK_GRACE_MS);
+                    if (rec) rec._replaceTimer = videoLossTimer;
+                } catch (e) {
+                    videoLossTimer = setTimeout(async () => {
+                        videoLossTimer = null;
+                        const lossState = {
+                            streamId,
+                            videoId,
+                            origin,
+                            trackId,
+                            domTimerActive: !!domDisconnectTimer,
+                            hasLiveVideo: hasLiveVideoTrack(),
+                            isRendering: isVideoRendering()
+                        };
+                        if (await attemptAutoRestore('videoLossTimer-fallback')) {
+                            return;
+                        }
+                        if (domDisconnectTimer) {
+                            debugLog('videoLossTimer:domPending', lossState);
+                            return;
+                        }
+                        if (lossState.hasLiveVideo || lossState.isRendering) {
+                            debugLog('videoLossTimer:skipActiveVideo', lossState);
+                            return;
+                        }
+                        debugLog('videoLossTimer:cleanup', lossState);
+                        try { cleanup('video track grace timer expired'); } catch (err) { cleanup(err); }
+                    }, VIDEO_TRACK_GRACE_MS);
+                }
+                debugLog('videoLossTimer:scheduled', state);
+            };
+            const clearDomDisconnectTimer = (source) => {
                 if (domDisconnectTimer) {
                     clearTimeout(domDisconnectTimer);
                     domDisconnectTimer = null;
+                    debugLog('domObserver:disconnectTimerCleared', { streamId, videoId, source });
                 }
             };
-            const cleanup = async () => {
-                if (cleaned) return; cleaned = true;
-                clearDomDisconnectTimer();
+            const cleanup = async (reason) => {
+                if (cleaned) {
+                    debugLog('cleanup:skipped', { streamId, videoId, reason: resolveCleanupReason(reason) });
+                    return;
+                }
+                cleaned = true;
+                const reasonLabel = resolveCleanupReason(reason);
+                debugLog('cleanup:start', {
+                    streamId,
+                    videoId,
+                    reason: reasonLabel,
+                    videoState: snapshotVideoState(video),
+                    streamTracks: describeTracks(stream)
+                });
+                clearDomDisconnectTimer('cleanup');
+                clearVideoLossTimer('cleanup');
                 try { if (domObserver) domObserver.disconnect(); } catch (e) {}
                 domObserver = null;
                 try { sendBye(); } catch (e) {}
@@ -5631,46 +5972,142 @@ function setupPublisherFunctions() {
                 } catch (e) {}
                 try { if (window.vdoPublishers) delete window.vdoPublishers[streamId]; } catch (e) {}
                 try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
+                debugLog('cleanup:complete', { streamId, videoId, reason: reasonLabel });
             };
+
+            function handleVideoPlaying() {
+                debugLog('videoElement:playing', { streamId, videoId });
+                clearVideoLossTimer('video-playing');
+            }
+
+            function handleVideoLoadedData() {
+                debugLog('videoElement:loadeddata', { streamId, videoId });
+                clearVideoLossTimer('video-loadeddata');
+            }
+
+            function handleVideoEnded(event) {
+                debugLog('videoElement:ended', { streamId, videoId, eventType: event?.type });
+                cleanup(event);
+            }
+
+            function attachVideoElementListeners(element) {
+                if (!element || attachedVideoElements.has(element)) return;
+                try { element.addEventListener('playing', handleVideoPlaying); } catch (e) {}
+                try { element.addEventListener('loadeddata', handleVideoLoadedData); } catch (e) {}
+                try { element.addEventListener('ended', handleVideoEnded, { once: true }); } catch (e) {}
+                attachedVideoElements.add(element);
+            }
 
             // Wire end/removal signals
             try {
                 // Track-level ended: only hard stop on audio; for video, allow a short grace window for replacement
                 stream.getTracks().forEach(t => {
+                    debugLog('streamTrack:monitor', { streamId, videoId, track: { kind: t.kind, id: t.id, readyState: t.readyState } });
                     if (t.kind === 'audio') {
-                        t.addEventListener('ended', cleanup, { once: true });
+                        t.addEventListener('ended', () => {
+                            debugLog('streamTrack:ended', { streamId, videoId, kind: 'audio', trackId: t.id });
+                            cleanup('audio track ended');
+                        }, { once: true });
                     } else if (t.kind === 'video') {
                         t.addEventListener('ended', () => {
+                            debugLog('streamTrack:ended', {
+                                streamId,
+                                videoId,
+                                kind: 'video',
+                                trackId: t.id,
+                                hasPublisherRecord: !!(window.vdoPublishers && window.vdoPublishers[streamId])
+                            });
                             try {
                                 if (window.vdoPublishers && window.vdoPublishers[streamId]) {
                                     const rec = window.vdoPublishers[streamId];
-                                    if (rec && !rec._replaceTimer) {
-                                        rec._replaceTimer = setTimeout(() => { try { cleanup(); } catch (e) {} }, 2000);
+                                    if (rec && rec._replaceTimer) {
+                                        debugLog('streamTrack:videoGraceTimerAlreadyPending', { streamId, videoId, trackId: t.id });
+                                    } else {
+                                        debugLog('streamTrack:videoGraceTimerStarted', { streamId, videoId, trackId: t.id, delayMs: VIDEO_TRACK_GRACE_MS });
+                                        scheduleVideoLossTimer('streamTrack', t.id);
                                     }
                                 } else {
-                                    cleanup();
+                                    cleanup('video track ended, no publisher record');
                                 }
-                            } catch (e) { cleanup(); }
+                            } catch (e) { cleanup(e); }
                         }, { once: true });
                     }
                 });
                 // Video element lifecycle
-                video.addEventListener('ended', cleanup, { once: true });
+                attachVideoElementListeners(video);
                 // Detect DOM removal
-                domObserver = new MutationObserver(() => {
+                domObserver = new MutationObserver((records) => {
                     const stillConnected = video.isConnected || document.contains(video);
+                    debugLog('domObserver:mutation', {
+                        streamId,
+                        videoId,
+                        stillConnected,
+                        videoIsConnected: video.isConnected,
+                        inDocument: document.contains(video)
+                    });
                     if (stillConnected) {
-                        clearDomDisconnectTimer();
+                        if (awaitingReplacement) {
+                            debugLog('domObserver:reconnected', { streamId, videoId });
+                        }
+                        awaitingReplacement = false;
+                        clearDomDisconnectTimer('mutation-reconnected');
                         return;
                     }
+                    if (!awaitingReplacement) {
+                        awaitingReplacement = true;
+                        debugLog('domObserver:awaitingReplacement', { streamId, videoId });
+                    }
                     if (!domDisconnectTimer) {
+                        debugLog('domObserver:disconnected', { streamId, videoId });
+                        debugLog('domObserver:disconnectTimerStarted', { streamId, videoId, delayMs: DOM_DISCONNECT_GRACE_MS });
                         domDisconnectTimer = setTimeout(() => {
                             domDisconnectTimer = null;
-                            try { cleanup(); } catch (e) { cleanup(); }
-                        }, 1000);
+                            const domState = {
+                                streamId,
+                                videoId,
+                                hasLiveVideo: hasLiveVideoTrack(),
+                                isRendering: isVideoRendering(),
+                                videoLossTimerActive: !!videoLossTimer
+                            };
+                            debugLog('domObserver:disconnectTimerFired', domState);
+                            if (videoLossTimer) {
+                                debugLog('domObserver:disconnectTimerAwaitingVideo', domState);
+                                return;
+                            }
+                            if (domState.hasLiveVideo || domState.isRendering) {
+                                debugLog('domObserver:disconnectTimerSkipActive', domState);
+                                return;
+                            }
+                            try { cleanup('dom removal grace expired'); } catch (e) { cleanup(e); }
+                        }, DOM_DISCONNECT_GRACE_MS);
+                    }
+                    if (awaitingReplacement) {
+                        try {
+                            for (const record of records || []) {
+                                for (const node of record.addedNodes || []) {
+                                    if (!(node instanceof Element)) continue;
+                                    const direct = node.nodeName === 'VIDEO' ? node : node.querySelector && node.querySelector('video');
+                                    if (direct && matchesVideoSignature(direct)) {
+                                        debugLog('domObserver:replacementCandidate', { streamId, videoId, trigger: 'addedNode' });
+                                        handleVideoElementReplacement(direct, 'mutation-added').catch(err => {
+                                            debugLog('videoReplacement:error', { streamId, videoId, error: err?.message || String(err) });
+                                        });
+                                        return;
+                                    }
+                                }
+                            }
+                        } catch (e) {}
+                        const fallbackCandidate = findReplacementVideoElement();
+                        if (fallbackCandidate) {
+                            debugLog('domObserver:replacementFallback', { streamId, videoId });
+                            handleVideoElementReplacement(fallbackCandidate, 'mutation-scan').catch(err => {
+                                debugLog('videoReplacement:error', { streamId, videoId, error: err?.message || String(err) });
+                            });
+                        }
                     }
                 });
                 domObserver.observe(document.documentElement || document.body, { childList: true, subtree: true });
+                debugLog('domObserver:observeStarted', { streamId, videoId });
             } catch (e) {
                 // best-effort only
             }
@@ -5682,84 +6119,125 @@ function setupPublisherFunctions() {
                 window.vdoPublishers[streamId] = window.vdoPublishers[streamId] || {};
                 const rec = window.vdoPublishers[streamId];
 
-                const clearReplaceTimer = () => {
-                    if (rec._replaceTimer) { clearTimeout(rec._replaceTimer); rec._replaceTimer = null; }
+                const clearReplaceTimer = (source) => {
+                    clearVideoLossTimer(source || 'replaceTimer');
                 };
-                const replaceVideoTrack = async (newTrack) => {
+                replaceVideoTrack = async (newTrack) => {
                     try {
                         if (!rec || !rec.stream || !rec.vdo || !newTrack) return;
                         const current = (rec.stream.getVideoTracks && rec.stream.getVideoTracks()[0]) || null;
-                        if (current === newTrack) { clearReplaceTimer(); return; }
+                        debugLog('replaceVideoTrack:attempt', {
+                            streamId,
+                            videoId,
+                            currentTrackId: current && current.id,
+                            newTrackId: newTrack.id,
+                            sameTrack: current === newTrack
+                        });
+                        if (current === newTrack) { clearReplaceTimer('replaceVideoTrack-sameTrack'); return; }
                         // Update local MediaStream
                         if (current) { try { rec.stream.removeTrack(current); } catch (e) {} }
                         try { rec.stream.addTrack(newTrack); } catch (e) {}
                         // Replace on RTCPeerConnection sender
                         try { await rec.vdo.replaceTrack(current, newTrack); } catch (e) {}
+                        debugLog('replaceVideoTrack:completed', {
+                            streamId,
+                            videoId,
+                            trackId: newTrack.id,
+                            streamTracks: describeTracks(rec.stream)
+                        });
                         // Listen for next end event on new track
                         try { newTrack.addEventListener('ended', () => {
-                            if (!rec._replaceTimer) rec._replaceTimer = setTimeout(() => { try { cleanup(); } catch (e) {} }, 2000);
+                            debugLog('replaceVideoTrack:newTrackEnded', { streamId, videoId, trackId: newTrack.id });
+                            debugLog('replaceVideoTrack:newTrackGraceTimerStarted', { streamId, videoId, trackId: newTrack.id, delayMs: VIDEO_TRACK_GRACE_MS });
+                            scheduleVideoLossTimer('replacementTrack', newTrack.id);
                         }, { once: true }); } catch (e) {}
-                        clearReplaceTimer();
+                        clearReplaceTimer('replaceVideoTrack-success');
                         
                     } catch (e) {}
                 };
-                const replaceAudioTrack = async (newTrack) => {
+                replaceAudioTrack = async (newTrack) => {
                     try {
                         if (!rec || !rec.stream || !rec.vdo || !newTrack) return;
                         const current = (rec.stream.getAudioTracks && rec.stream.getAudioTracks()[0]) || null;
+                        debugLog('replaceAudioTrack:attempt', {
+                            streamId,
+                            videoId,
+                            currentTrackId: current && current.id,
+                            newTrackId: newTrack.id,
+                            sameTrack: current === newTrack
+                        });
                         if (current === newTrack) { return; }
                         if (current) { try { rec.stream.removeTrack(current); } catch (e) {} }
                         try { rec.stream.addTrack(newTrack); } catch (e) {}
                         try { await rec.vdo.replaceTrack(current, newTrack); } catch (e) {}
-                        try { console.log('[VDO Ext] Replaced audio track after source change'); } catch (e) {}
+                        debugLog('replaceAudioTrack:completed', {
+                            streamId,
+                            videoId,
+                            trackId: newTrack.id,
+                            streamTracks: describeTracks(rec.stream)
+                        });
                     } catch (e) {}
                 };
 
-                // Listen for source stream track changes
-                try {
-                    baseVideoStream.addEventListener('addtrack', (ev) => {
-                        if (!ev || !ev.track) return;
-                        if (ev.track.kind === 'video') {
-                            replaceVideoTrack(ev.track);
-                        } else if (ev.track.kind === 'audio') {
-                            // Only replace audio directly if we are NOT using the mixer
-                            const usingMixer = !!(rec && rec.audioContext);
-                            if (!usingMixer) replaceAudioTrack(ev.track);
-                            else {
-                                // For mixer path, (re)connect base video audio into the destination
+                function onBaseStreamAddTrack(ev) {
+                    if (!ev || !ev.track) return;
+                    const streamSource = ev.currentTarget || ev.target || baseVideoStream;
+                    if (ev.track.kind === 'video') {
+                        debugLog('baseVideoStream:addtrack', { streamId, videoId, kind: 'video', trackId: ev.track.id });
+                        replaceVideoTrack(ev.track);
+                        clearVideoLossTimer('baseVideoStream-addtrackVideo');
+                    } else if (ev.track.kind === 'audio') {
+                        debugLog('baseVideoStream:addtrack', { streamId, videoId, kind: 'audio', trackId: ev.track.id });
+                        const usingMixer = !!(rec && rec.audioContext);
+                        if (!usingMixer) replaceAudioTrack(ev.track);
+                        else {
+                            try {
+                                if (rec.audioContext && rec.audioDestination) {
+                                    if (rec.videoAudioSource) { try { rec.videoAudioSource.disconnect(); } catch (e) {} }
+                                    rec.videoAudioSource = rec.audioContext.createMediaStreamSource(streamSource);
+                                    rec.videoAudioSource.connect(rec.audioDestination);
+                                    debugLog('baseVideoStream:addtrackMixerRewired', { streamId, videoId, trackId: ev.track.id });
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+
+                function onBaseStreamRemoveTrack(ev) {
+                    if (!ev || !ev.track) return;
+                    if (ev.track.kind === 'video') {
+                        debugLog('baseVideoStream:removetrack', { streamId, videoId, kind: 'video', trackId: ev.track.id });
+                        debugLog('baseVideoStream:videoReplaceTimerStarted', { streamId, videoId, trackId: ev.track.id, delayMs: VIDEO_TRACK_GRACE_MS });
+                        scheduleVideoLossTimer('baseVideoStream', ev.track.id);
+                    } else if (ev.track.kind === 'audio') {
+                        debugLog('baseVideoStream:removetrack', { streamId, videoId, kind: 'audio', trackId: ev.track.id });
+                        const usingMixer = !!(rec && rec.audioContext);
+                        if (usingMixer) {
+                            try { if (rec.videoAudioSource) { rec.videoAudioSource.disconnect(); rec.videoAudioSource = null; } } catch (e) {}
+                        } else {
+                            setTimeout(() => {
                                 try {
-                                    if (rec.audioContext && rec.audioDestination) {
-                                        if (rec.videoAudioSource) { try { rec.videoAudioSource.disconnect(); } catch (e) {} }
-                                        rec.videoAudioSource = rec.audioContext.createMediaStreamSource(baseVideoStream);
-                                        rec.videoAudioSource.connect(rec.audioDestination);
-                                        
+                                    const hasAudio = baseVideoStream && baseVideoStream.getAudioTracks && baseVideoStream.getAudioTracks().length > 0;
+                                    if (!hasAudio) {
+                                        debugLog('baseVideoStream:audioReplaceTimeoutNoAudio', { streamId, videoId });
+                                        cleanup('audio track removal without replacement');
                                     }
-                                } catch (e) {}
-                            }
+                                } catch (error) { cleanup(error); }
+                            }, AUDIO_TRACK_GRACE_MS);
                         }
-                    });
-                } catch (e) {}
-                try {
-                    baseVideoStream.addEventListener('removetrack', (ev) => {
-                        if (!ev || !ev.track) return;
-                        if (ev.track.kind === 'video') {
-                            if (!rec._replaceTimer) rec._replaceTimer = setTimeout(() => { try { cleanup(); } catch (e) {} }, 2000);
-                        } else if (ev.track.kind === 'audio') {
-                            // For mixer path, disconnect the old source; for direct path, wait briefly for replacement then end
-                            const usingMixer = !!(rec && rec.audioContext);
-                            if (usingMixer) {
-                                try { if (rec.videoAudioSource) { rec.videoAudioSource.disconnect(); rec.videoAudioSource = null; } } catch (e) {}
-                            } else {
-                                setTimeout(() => {
-                                    try {
-                                        const hasAudio = baseVideoStream.getAudioTracks && baseVideoStream.getAudioTracks().length > 0;
-                                        if (!hasAudio) cleanup();
-                                    } catch (e) { cleanup(); }
-                                }, 2000);
-                            }
-                        }
-                    });
-                } catch (e) {}
+                    }
+                }
+
+                attachBaseStreamListeners = (streamSource) => {
+                    if (!streamSource || typeof streamSource.addEventListener !== 'function') return;
+                    baseVideoStream = streamSource;
+                    if (streamSource.__vdoListenersAttached) return;
+                    streamSource.__vdoListenersAttached = true;
+                    try { streamSource.addEventListener('addtrack', onBaseStreamAddTrack); } catch (e) {}
+                    try { streamSource.addEventListener('removetrack', onBaseStreamRemoveTrack); } catch (e) {}
+                };
+
+                attachBaseStreamListeners(baseVideoStream);
             } catch (e) {}
 
             // Store
