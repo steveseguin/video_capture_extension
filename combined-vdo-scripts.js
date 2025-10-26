@@ -6668,12 +6668,20 @@ function setupPublisherFunctions() {
             
             // Capture stream
             let stream;
-            if (video.captureStream) {
+            let streamOrigin = 'unknown';
+            let allowSourceTrackStop = true;
+            if (typeof video.captureStream === 'function') {
                 stream = video.captureStream(30);
-            } else if (video.mozCaptureStream) {
+                streamOrigin = 'element-capture';
+                allowSourceTrackStop = false;
+            } else if (typeof video.mozCaptureStream === 'function') {
                 stream = video.mozCaptureStream(30);
+                streamOrigin = 'element-capture';
+                allowSourceTrackStop = false;
             } else if (video.srcObject instanceof MediaStream) {
                 stream = video.srcObject;
+                streamOrigin = 'element-srcobject';
+                allowSourceTrackStop = false;
             } else {
                 const canvas = document.createElement('canvas');
                 canvas.width = video.videoWidth || 640;
@@ -6687,10 +6695,18 @@ function setupPublisherFunctions() {
                 draw();
                 
                 stream = canvas.captureStream(30);
+                streamOrigin = 'canvas-fallback';
+                allowSourceTrackStop = true;
             }
             // Keep a reference to the original captured media stream (video source)
             let baseVideoStream = stream;
-            debugLog('baseVideoStream:initialized', { streamId, videoId, tracks: describeTracks(baseVideoStream) });
+            debugLog('baseVideoStream:initialized', {
+                streamId,
+                videoId,
+                streamOrigin,
+                allowSourceTrackStop,
+                tracks: describeTracks(baseVideoStream)
+            });
             const videoSignature = {
                 datasetId: (() => { try { return video?.dataset?.vdoCaptureId || null; } catch (e) { return null; } })(),
                 currentSrc: (() => { try { return video?.currentSrc || video?.src || null; } catch (e) { return null; } })(),
@@ -7111,7 +7127,15 @@ function setupPublisherFunctions() {
                 // Give DC a beat to flush before closing
                 await new Promise(r => setTimeout(r, 50));
                 try { if (vdo && vdo.disconnect) await vdo.disconnect(); } catch (e) {}
-                try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                try {
+                    if (stream) {
+                        if (allowSourceTrackStop) {
+                            stream.getTracks().forEach(t => t.stop());
+                        } else {
+                            debugLog('cleanup:skipStreamStop', { streamId, videoId, streamOrigin });
+                        }
+                    }
+                } catch (e) {}
                 try {
                     const rec = window.vdoPublishers && window.vdoPublishers[streamId];
                     if (rec && rec.micStream) { rec.micStream.getTracks().forEach(t => t.stop()); }
@@ -7390,9 +7414,14 @@ function setupPublisherFunctions() {
             // Store
             window.vdoPublishers = window.vdoPublishers || {};
             window.vdoPublishers[streamId] = Object.assign(window.vdoPublishers[streamId] || {}, {
-                vdo, stream, videoId,
-                micStream: (window.vdoPublishers[streamId]||{}).micStream,
-                audioContext: (window.vdoPublishers[streamId]||{}).audioContext
+                vdo,
+                stream,
+                videoId,
+                micStream: (window.vdoPublishers[streamId] || {}).micStream,
+                audioContext: (window.vdoPublishers[streamId] || {}).audioContext,
+                cleanup,
+                streamOrigin,
+                allowSourceTrackStop
             });
             
             // (Label metadata broadcast intentionally omitted; handled externally)
@@ -7411,17 +7440,41 @@ function setupPublisherFunctions() {
     // Stop function
     window.stopVDOPublisher = async function(streamId) {
         try {
-            if (window.vdoPublishers && window.vdoPublishers[streamId]) {
-                const { vdo, stream, videoId, micStream, audioContext } = window.vdoPublishers[streamId];
-                // Send a polite bye to viewers first (no fallback)
-                try { vdo && vdo.sendData && vdo.sendData({ bye: true }, { allowFallback: false }); } catch (e) {}
-                await new Promise(r => setTimeout(r, 50));
-                if (vdo && vdo.disconnect) { await vdo.disconnect(); }
-                if (stream) { stream.getTracks().forEach(track => track.stop()); }
-                try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-                try { if (audioContext && typeof audioContext.close === 'function') audioContext.close(); } catch (e) {}
-                delete window.vdoPublishers[streamId];
-                try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
+            const record = window.vdoPublishers && window.vdoPublishers[streamId];
+            if (record) {
+                const {
+                    vdo,
+                    stream,
+                    videoId,
+                    micStream,
+                    audioContext,
+                    cleanup: recordCleanup,
+                    allowSourceTrackStop
+                } = record;
+
+                let cleanupHandled = false;
+                if (typeof recordCleanup === 'function') {
+                    try {
+                        await recordCleanup({ type: 'manual-stop' });
+                        cleanupHandled = true;
+                    } catch (cleanupError) {
+                        console.warn('stopVDOPublisher: cleanup failed, falling back to manual teardown', cleanupError);
+                    }
+                }
+
+                if (!cleanupHandled) {
+                    // Send a polite bye to viewers first (no fallback)
+                    try { vdo && vdo.sendData && vdo.sendData({ bye: true }, { allowFallback: false }); } catch (e) {}
+                    await new Promise(r => setTimeout(r, 50));
+                    if (vdo && vdo.disconnect) { await vdo.disconnect(); }
+                    if (stream && allowSourceTrackStop !== false) {
+                        try { stream.getTracks().forEach(track => track.stop()); } catch (e) {}
+                    }
+                    try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                    try { if (audioContext && typeof audioContext.close === 'function') audioContext.close(); } catch (e) {}
+                    delete window.vdoPublishers[streamId];
+                    try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
+                }
             }
             
             return { success: true };
