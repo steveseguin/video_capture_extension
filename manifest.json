@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "116",
   "name": "VDO.Ninja Video Capture",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "Capture videos from web pages and stream them via VDO.Ninja",
   "permissions": [
     "activeTab",
