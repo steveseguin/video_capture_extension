@@ -21,7 +21,7 @@ function detectVideos() {
         if (!isRenderable) return;
 
         const existingId = video.dataset.vdoCaptureId;
-        const videoId = existingId || `video-${index}-${Date.now()}`;
+        const videoId = existingId || `video-${Array.from(crypto.getRandomValues(new Uint32Array(4)), part => part.toString(16).padStart(8, '0')).join('')}`;
 
         // Determine dimensions using intrinsic size first, then layout box
         const width = video.videoWidth || rect.width || 0;
@@ -138,6 +138,14 @@ function getVideoTitle(video) {
 async function captureVideo(videoId) {
     const video = document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
     if (!video) return null;
+    const existing = capturedStreams.get(videoId);
+    if (existing) {
+        return { id: videoId, title: existing.title,
+            hasAudio: existing.stream.getAudioTracks().length > 0,
+            hasVideo: existing.stream.getVideoTracks().length > 0 };
+    }
+    let stream = null;
+    let drawFrame = null;
     
     try {
         // Guard: avoid capturing empty 0x0 video with no audio
@@ -153,14 +161,12 @@ async function captureVideo(videoId) {
             throw new Error('Refusing to capture 0x0 video without audio');
         }
 
-        let stream;
-        
         if (video.captureStream) {
             stream = video.captureStream();
         } else if (video.mozCaptureStream) {
             stream = video.mozCaptureStream();
         } else if (video.srcObject) {
-            stream = video.srcObject;
+            stream = video.srcObject.clone();
         } else {
             throw new Error('Cannot capture stream from this video');
         }
@@ -179,12 +185,17 @@ async function captureVideo(videoId) {
             
             const canvasStream = canvas.captureStream(30);
             
-            const drawFrame = () => {
-                if (!capturedStreams.has(videoId)) return;
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                requestAnimationFrame(drawFrame);
+            drawFrame = () => {
+                const capture = capturedStreams.get(videoId);
+                if (!capture || capture.stream !== stream) return;
+                try {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    capture.frameId = requestAnimationFrame(drawFrame);
+                } catch (error) {
+                    console.error('Canvas capture failed:', error);
+                    stopCapture(videoId);
+                }
             };
-            drawFrame();
             
             stream = new MediaStream([
                 ...canvasStream.getVideoTracks(),
@@ -197,15 +208,19 @@ async function captureVideo(videoId) {
             video: video,
             title: getVideoTitle(video)
         });
+        if (drawFrame) drawFrame();
+        if (!capturedStreams.has(videoId)) return null;
         
         return {
             id: videoId,
             title: getVideoTitle(video),
             hasAudio: audioTracks.length > 0,
-            hasVideo: videoTracks.length > 0
+            hasVideo: stream.getVideoTracks().length > 0
         };
         
     } catch (error) {
+        if (capturedStreams.has(videoId)) stopCapture(videoId);
+        else stream?.getTracks().forEach(track => track.stop());
         console.error('Error capturing video:', error);
         return null;
     }
@@ -233,6 +248,7 @@ async function captureScreenshot(videoId) {
 function stopCapture(videoId) {
     const capture = capturedStreams.get(videoId);
     if (capture && capture.stream) {
+        if (capture.frameId != null) cancelAnimationFrame(capture.frameId);
         capture.stream.getTracks().forEach(track => track.stop());
         capturedStreams.delete(videoId);
         return true;

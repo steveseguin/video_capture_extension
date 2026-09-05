@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>VDO.Ninja Video Capture</title>
@@ -8,9 +8,10 @@
 <body>
     <div class="container">
         <header>
-            <h1>VDO.Ninja Capture</h1>
-            <button id="refreshBtn" class="icon-btn" title="Refresh videos">↻</button>
+            <h1>VDO.Ninja Capture <small id="extensionVersion" class="extension-version"></small></h1>
+            <button id="refreshBtn" class="icon-btn" title="Refresh videos" aria-label="Refresh videos">↻</button>
         </header>
+        <div id="notification" class="notification" role="status" aria-live="polite" hidden></div>
         
         <div class="tabs">
             <button class="tab active" data-tab="videos">Videos</button>
@@ -27,6 +28,7 @@
         <div class="tab-content" id="tab-tab" style="display:none">
             <div class="capture-options">
                 <h3>Capture Entire Tab</h3>
+                <p class="capture-hint">One tab capture at a time. Keep the source tab open while streaming.</p>
                 <div class="option-group">
                     <label>
                         <input type="checkbox" id="captureAudio" checked>
@@ -37,7 +39,7 @@
                         Include Video
                     </label>
                 </div>
-                <button id="captureTabBtn" class="primary-btn">
+                <button id="captureTabBtn" class="btn primary-btn">
                     Start Tab Capture
                 </button>
             </div>
@@ -118,7 +120,7 @@
             <details class="info-section">
                 <summary>ℹ️ About VDO.Ninja</summary>
                 <div class="info-content">
-                    <p><strong>🔒 Peer-to-Peer Privacy:</strong> VDO.Ninja uses direct browser-to-browser connections. Your video never goes through a server.</p>
+                    <p><strong>🔒 Peer-to-Peer Privacy:</strong> Media travels directly between browsers when possible. Encrypted TURN relays may be used when a direct connection is unavailable.</p>
                     
                     <p><strong>🏠 LAN Optimization:</strong> When viewers are on the same local network, video streams directly over LAN without using internet bandwidth.</p>
                     
@@ -126,7 +128,7 @@
                     
                     <p><strong>💚 Free Service:</strong> VDO.Ninja is completely free and open-source. No accounts, no limits on stream duration.</p>
                     
-                    <p><strong>🌍 Global Reach:</strong> Works worldwide with automatic TURN relay servers for restricted networks (~10% of users).</p>
+                    <p><strong>🌍 Network Compatibility:</strong> Automatic TURN relays help when a direct connection is blocked by your network.</p>
                 </div>
             </details>
         </div>

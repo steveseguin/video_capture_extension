@@ -22,21 +22,34 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Run regression checks
+      run: node --test tests/*.test.cjs
+
     - name: Get version
       id: get_version
+      env:
+        RELEASE_EVENT: ${{ github.event_name }}
+        VERSION_INPUT: ${{ github.event.inputs.version }}
       run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          echo "VERSION=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          echo "VERSION_NUMBER=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        if [ "$RELEASE_EVENT" = "workflow_dispatch" ]; then
+          echo "VERSION=v$VERSION_INPUT" >> "$GITHUB_OUTPUT"
+          echo "VERSION_NUMBER=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
         else
-          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          echo "VERSION_NUMBER=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          echo "VERSION_NUMBER=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
         fi
     
     - name: Update manifest version
       if: github.event_name == 'workflow_dispatch'
+      env:
+        RELEASE_VERSION: ${{ steps.get_version.outputs.VERSION_NUMBER }}
       run: |
-        jq '.version = "${{ steps.get_version.outputs.VERSION_NUMBER }}"' manifest.json > manifest.tmp.json
+        jq --arg version "$RELEASE_VERSION" '.version = $version' manifest.json > manifest.tmp.json
         mv manifest.tmp.json manifest.json
         
     - name: Create distribution package
@@ -52,6 +65,8 @@ jobs:
         cp *.html dist/
         cp *.css dist/
         cp LICENSE dist/
+        cp LICENSE-SDK dist/
+        cp CHANGELOG.md dist/
         cp README.md dist/
         cp PRIVACY_JUSTIFICATIONS.md dist/
         

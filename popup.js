@@ -1,5 +1,13 @@
 let activeStreams = new Map();
 let currentTab = null;
+let videoScanGeneration = 0;
+let streamSyncGeneration = 0;
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
+}
 
 function isRestrictedUrl(url) {
     try {
@@ -10,6 +18,7 @@ function isRestrictedUrl(url) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    document.getElementById('extensionVersion').textContent = `v${chrome.runtime.getManifest().version}`;
     currentTab = await getCurrentTab();
     
     initializeTabs();
@@ -28,13 +37,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 2000);
     
     document.getElementById('refreshBtn').addEventListener('click', refreshVideos);
-    document.getElementById('captureTabBtn').addEventListener('click', captureTab);
+    document.getElementById('captureTabBtn').onclick = () =>
+        activeStreams.has(`tab-${currentTab.id}`) ? stopTabCapture() : captureTab();
     document.getElementById('vdoServer').addEventListener('change', handleServerChange);
 });
 
 async function syncWithBackground() {
+    const generation = ++streamSyncGeneration;
     // Get active streams from background script
     const response = await chrome.runtime.sendMessage({ type: 'getActiveStreams' });
+    if (generation !== streamSyncGeneration) return;
     
     if (response && Array.isArray(response)) {
         // synced active streams
@@ -42,7 +54,9 @@ async function syncWithBackground() {
         // Rebuild map from background; include all active streams
         const next = new Map();
         response.forEach(stream => {
-            next.set(stream.id, {
+            const previous = activeStreams.get(stream.id);
+            const entry = previous?.streamId === stream.streamId ? previous : {};
+            Object.assign(entry, {
                 id: stream.id,
                 streamId: stream.streamId,
                 roomId: stream.roomId,
@@ -53,11 +67,12 @@ async function syncWithBackground() {
                 timestamp: stream.timestamp || Date.now(),
                 type: stream.type
             });
+            next.set(stream.id, entry);
         });
         activeStreams = next;
         
         saveActiveStreams();
-        refreshThumbnails();
+        refreshThumbnails(true);
     }
 }
 
@@ -90,6 +105,7 @@ async function getCurrentTab() {
 }
 
 async function refreshVideos() {
+    const generation = ++videoScanGeneration;
     if (!currentTab) return;
     
     const videoList = document.getElementById('videoList');
@@ -114,7 +130,7 @@ async function refreshVideos() {
                 const vids = document.querySelectorAll('video');
                 vids.forEach((v, i) => {
                     const rect = v.getBoundingClientRect();
-                    const id = v.dataset.vdoCaptureId || `video-${i}-${Date.now()}`;
+                    const id = v.dataset.vdoCaptureId || `video-${Array.from(crypto.getRandomValues(new Uint32Array(4)), part => part.toString(16).padStart(8, '0')).join('')}`;
                     if (!v.dataset.vdoCaptureId) v.dataset.vdoCaptureId = id;
                     out.push({
                         id,
@@ -130,6 +146,7 @@ async function refreshVideos() {
                 return out;
             }
         });
+        if (generation !== videoScanGeneration) return;
         const videos = (results || []).flatMap(r => Array.isArray(r.result) ? r.result.map(v => ({ ...v, frameId: r.frameId })) : []);
 
         if (!videos || videos.length === 0) {
@@ -152,11 +169,13 @@ async function refreshVideos() {
                     videoId: video.id
                 }, { frameId: video.frameId });
             } catch (e) {}
+            if (generation !== videoScanGeneration) return;
             
             const videoEl = createVideoElement(video, screenshot);
             videoList.appendChild(videoEl);
         }
     } catch (error) {
+        if (generation !== videoScanGeneration) return;
         console.error('Error refreshing videos:', error);
         videoList.innerHTML = '<div class="empty-state">Error: Unable to scan page</div>';
     }
@@ -178,13 +197,13 @@ function createVideoElement(video, screenshot) {
     div.innerHTML = `
         <div class="video-thumbnail">
             ${screenshot ? 
-                `<img src="${screenshot}" alt="${video.title}">` : 
+                `<img src="${escapeHtml(screenshot)}" alt="${escapeHtml(video.title)}">` :
                 '<div class="no-preview">No preview available</div>'
             }
             ${!video.paused ? '<div class="video-status live">LIVE</div>' : ''}
         </div>
         <div class="video-info">
-            <div class="video-title">${video.title}</div>
+            <div class="video-title">${escapeHtml(video.title)}</div>
             <div class="video-meta">
                 <span>${video.width}x${video.height}</span>
                 <span>${video.hasAudio ? '🔊 Audio' : '🔇 No Audio'}</span>
@@ -322,7 +341,7 @@ async function stopStream(videoId) {
     const response = await chrome.runtime.sendMessage({
         type: 'stopStream',
         videoId: videoId,
-        tabId: currentTab.id,
+        tabId: st?.tabId,
         frameId: st?.frameId
     });
     
@@ -333,11 +352,7 @@ async function stopStream(videoId) {
         updateActiveStreams();
         showNotification('Stream stopped');
     } else {
-        // Even if background fails, clean up local state
-        activeStreams.delete(videoId);
-        saveActiveStreams();
-        updateActiveStreams();
-        showNotification('Stream removed from list');
+        showNotification(response?.error || 'Failed to stop stream', 'error');
     }
 }
 
@@ -407,7 +422,6 @@ async function captureTab() {
         showNotification('Tab capture started');
         
         document.getElementById('captureTabBtn').textContent = 'Stop Tab Capture';
-        document.getElementById('captureTabBtn').onclick = () => stopTabCapture();
         
         // Switch to active streams tab to show the links
         document.querySelector('[data-tab="active"]').click();
@@ -428,7 +442,6 @@ async function stopTabCapture() {
         updateActiveStreams();
         
         document.getElementById('captureTabBtn').textContent = 'Start Tab Capture';
-        document.getElementById('captureTabBtn').onclick = captureTab;
         
         showNotification('Tab capture stopped');
     }
@@ -454,14 +467,13 @@ async function stopActiveStream(id) {
         updateActiveStreams();
         showNotification('Stream stopped');
     } else {
-        // Remove from UI anyway
-        activeStreams.delete(id);
-        saveActiveStreams();
-        updateActiveStreams();
+        showNotification(response?.error || 'Failed to stop stream', 'error');
     }
 }
 
 function updateActiveStreams() {
+    document.getElementById('captureTabBtn').textContent = activeStreams.has(`tab-${currentTab?.id}`)
+        ? 'Stop Tab Capture' : 'Start Tab Capture';
     const container = document.getElementById('activeStreams');
     
     if (!activeStreams || activeStreams.size === 0) {
@@ -486,20 +498,20 @@ function updateActiveStreams() {
             <div class="stream-header">
                 <div class="stream-head-left">
                     ${thumb ? `<img class=\"stream-thumb\" src=\"${thumb}\">` : `<div class=\"stream-thumb placeholder\"></div>`}
-                    <div class="stream-title">${title}</div>
+                    <div class="stream-title">${escapeHtml(title)}</div>
                 </div>
                 <div class="stream-badge">LIVE</div>
             </div>
             <div class="stream-links">
                 ${links.map(link => `
                     <div class="stream-link">
-                        <span>${link.label}:</span>
-                        <a href="#" data-url="${link.url}" class="stream-url">${link.url}</a>
-                        <button class="copy-btn" data-url="${link.url}">Copy</button>
+                        <span>${escapeHtml(link.label)}:</span>
+                        <a href="#" data-url="${escapeHtml(link.url)}" class="stream-url">${escapeHtml(link.url)}</a>
+                        <button class="copy-btn" data-url="${escapeHtml(link.url)}">Copy</button>
                     </div>
                 `).join('')}
             </div>
-            <button class="btn danger-btn" data-stream-id="${id}">Stop Stream</button>
+            <button class="btn danger-btn" data-stream-id="${escapeHtml(id)}">Stop Stream</button>
         `;
         
         div.querySelectorAll('.copy-btn').forEach(btn => {
@@ -540,12 +552,14 @@ function getSettings() {
 }
 
 function loadSettings() {
-    chrome.storage.local.get(['roomId', 'streamId', 'password', 'server', 'showlabel'], (data) => {
-        if (data.roomId) document.getElementById('roomId').value = data.roomId;
-        if (data.streamId) document.getElementById('streamId').value = data.streamId;
-        if (data.password !== undefined) document.getElementById('password').value = data.password;
+    const valueFields = ['roomId', 'streamId', 'password', 'bitrate', 'codec'];
+    const checkFields = ['sharper', 'proaudio', 'showlabel'];
+    chrome.storage.local.get([...valueFields, ...checkFields, 'server'], (data) => {
+        valueFields.forEach(id => {
+            if (data[id] !== undefined) document.getElementById(id).value = data[id] ?? '';
+        });
         if (data.server) {
-            if (data.server.includes('vdo.ninja') || data.server.includes('socialstream')) {
+            if (Array.from(document.getElementById('vdoServer').options).some(option => option.value === data.server && option.value !== 'custom')) {
                 document.getElementById('vdoServer').value = data.server;
             } else {
                 document.getElementById('vdoServer').value = 'custom';
@@ -553,12 +567,12 @@ function loadSettings() {
                 document.getElementById('customServer').style.display = 'block';
             }
         }
-        if (typeof data.showlabel === 'boolean') {
-            document.getElementById('showlabel').checked = data.showlabel;
-        }
+        checkFields.forEach(id => {
+            if (typeof data[id] === 'boolean') document.getElementById(id).checked = data[id];
+        });
     });
     
-    ['roomId', 'streamId', 'password', 'showlabel'].forEach(id => {
+    [...valueFields, ...checkFields, 'customServer'].forEach(id => {
         document.getElementById(id).addEventListener('change', saveSettings);
     });
 }
@@ -589,8 +603,16 @@ function formatDuration(seconds) {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+let notificationTimer = null;
 function showNotification(message, type = 'success') {
     console.log(`[${type}] ${message}`);
+    const notification = document.getElementById?.('notification');
+    if (!notification) return;
+    clearTimeout(notificationTimer);
+    notification.textContent = message;
+    notification.className = `notification ${type === 'error' ? 'notification-error' : 'notification-success'}`;
+    notification.hidden = false;
+    notificationTimer = setTimeout(() => { notification.hidden = true; }, type === 'error' ? 10000 : 5000);
 }
 
 // Mic selector removed: Chrome prompt lets users choose a device when needed
@@ -612,7 +634,7 @@ async function refreshThumbnails(throttle = false) {
                 if (stream.type === 'video' && stream.tabId && stream.streamId) {
                     // Prefer page-context thumbnail from publisher stream
                     try {
-                        const resp = await chrome.runtime.sendMessage({ type: 'getStreamThumbnail', tabId: stream.tabId, streamId: stream.streamId });
+                        const resp = await chrome.runtime.sendMessage({ type: 'getStreamThumbnail', tabId: stream.tabId, frameId: stream.frameId, streamId: stream.streamId });
                         if (resp && resp.success) dataUrl = resp.dataUrl;
                         // If the returned JPEG is suspiciously tiny, consider it invalid (likely black frame)
                         if (dataUrl && isLikelyBlackImage(dataUrl)) {

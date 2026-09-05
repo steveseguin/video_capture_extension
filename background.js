@@ -1,5 +1,40 @@
 const activePublishers = new Map();
 const activeTabs = new Map();
+const pendingVideoStarts = new Map();
+let pendingTabCapture = null;
+let offscreenCreation = null;
+
+function ensureOffscreenDocument() {
+    if (offscreenCreation) return offscreenCreation;
+    offscreenCreation = (async () => {
+        const url = chrome.runtime.getURL('offscreen.html');
+        const contexts = chrome.runtime.getContexts
+            ? await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [url] })
+            : (await clients.matchAll()).filter(client => client.url === url);
+        if (!contexts.length) {
+            // Resolves after the initial page load, so no arbitrary delay is needed.
+            await chrome.offscreen.createDocument({
+                url: 'offscreen.html', reasons: ['USER_MEDIA'],
+                justification: 'Tab capture requires getUserMedia in offscreen document'
+            });
+        }
+    })().finally(() => { offscreenCreation = null; });
+    return offscreenCreation;
+}
+
+// Session storage survives worker suspension, but clears when the browser or
+// extension restarts, when the publishers themselves no longer exist.
+const stateReady = chrome.storage.session.get('publisherState').then(({ publisherState }) => {
+    for (const [id, publisher] of publisherState?.videos || []) activePublishers.set(id, publisher);
+    for (const [id, capture] of publisherState?.tabs || []) activeTabs.set(id, capture);
+});
+let stateWrite = Promise.resolve();
+function savePublisherState() {
+    const publisherState = { videos: [...activePublishers], tabs: [...activeTabs] };
+    stateWrite = stateWrite.catch(() => {}).then(() => chrome.storage.session.set({ publisherState }));
+    return stateWrite;
+}
+const stateMutations = new Set(['startStream', 'stopStream', 'publisherEnded', 'tabCaptureEnded', 'captureTab', 'stopTabCapture']);
 
 function generateStreamId() {
     return 'stream_' + Math.random().toString(36).substr(2, 9);
@@ -7,6 +42,17 @@ function generateStreamId() {
 
 function generateRoomId() {
     return 'room_' + Math.random().toString(36).substr(2, 9);
+}
+
+function normalizePublisherIds(settings = {}) {
+    // Match the bundled SDK's ID rules before storing IDs or building links.
+    // Tests compare these results with the SDK's own normalization methods.
+    const stream = typeof settings.streamId === 'string' ? settings.streamId.trim() : '';
+    const room = settings.roomId == null || settings.roomId === false ? '' : String(settings.roomId).trim();
+    return {
+        streamId: stream ? stream.replace(/[\W]+/g, '_').slice(0, 64) : generateStreamId(),
+        roomId: room.replace(/[\W]+/g, '_').slice(0, 30)
+    };
 }
 
 function getVdoLinks(server, roomId, streamId, qualitySettings = {}) {
@@ -32,10 +78,10 @@ function getVdoLinks(server, roomId, streamId, qualitySettings = {}) {
     // Build quality parameters
     let qualityParams = '';
     if (qualitySettings.bitrate) {
-        qualityParams += `&bitrate=${qualitySettings.bitrate}`;
+        qualityParams += `&bitrate=${encodeURIComponent(qualitySettings.bitrate)}`;
     }
     if (qualitySettings.codec) {
-        qualityParams += `&codec=${qualitySettings.codec}`;
+        qualityParams += `&codec=${encodeURIComponent(qualitySettings.codec)}`;
     }
     if (qualitySettings.sharper) {
         qualityParams += '&sharper';
@@ -50,16 +96,16 @@ function getVdoLinks(server, roomId, streamId, qualitySettings = {}) {
     if (roomId && roomId.trim() !== '') {
         links.push({
             label: 'Direct View',
-            url: `${baseUrl}/?view=${streamId}&room=${roomId}&solo${qualityParams}`
+            url: `${baseUrl}/?view=${encodeURIComponent(streamId)}&room=${encodeURIComponent(roomId)}&solo${qualityParams}`
         });
         links.push({
             label: 'Room View',
-            url: `${baseUrl}/?room=${roomId}&scene${qualityParams}`
+            url: `${baseUrl}/?room=${encodeURIComponent(roomId)}&scene${qualityParams}`
         });
     } else {
         links.push({
             label: 'Direct View',
-            url: `${baseUrl}/?view=${streamId}${qualityParams}`
+            url: `${baseUrl}/?view=${encodeURIComponent(streamId)}${qualityParams}`
         });
     }
     
@@ -69,11 +115,18 @@ function getVdoLinks(server, roomId, streamId, qualitySettings = {}) {
 // SDK injection not needed - already loaded via content scripts
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    const maybePromise = handleMessage(request, sender);
+    if (request.target === 'offscreen' || request.type === 'getTabThumbnail') return false;
+    const maybePromise = stateReady.then(async () => {
+        try {
+            return await handleMessage(request, sender);
+        } finally {
+            if (stateMutations.has(request.type)) await savePublisherState();
+        }
+    });
     if (maybePromise && typeof maybePromise.then === 'function') {
         maybePromise.then((resp) => {
             if (resp !== '__NO_RESPONSE__') sendResponse(resp);
-        });
+        }).catch(error => sendResponse({ success: false, error: error.message }));
     } else {
         if (maybePromise !== '__NO_RESPONSE__') sendResponse(maybePromise);
     }
@@ -93,6 +146,11 @@ async function handleMessage(request, sender) {
             if (request && request.videoId && activePublishers.has(request.videoId)) {
                 activePublishers.delete(request.videoId);
             }
+            return { success: true };
+
+        case 'tabCaptureEnded':
+            if (pendingTabCapture?.tabId === request.tabId) pendingTabCapture.cancelled = true;
+            activeTabs.delete(request.tabId);
             return { success: true };
 
         case 'getStreamThumbnail':
@@ -121,12 +179,12 @@ async function handleMessage(request, sender) {
 }
 
 async function getStreamThumbnail(request) {
-    const { tabId, streamId } = request;
+    const { tabId, frameId, streamId } = request;
     if (!tabId || !streamId) return { success: false, error: 'Missing tabId or streamId' };
     try {
         const requestId = Math.random().toString(36).slice(2);
         const [result] = await chrome.scripting.executeScript({
-            target: { tabId },
+            target: frameId == null ? { tabId } : { tabId, frameIds: [frameId] },
             func: async (streamId, requestId) => {
                 return new Promise((resolve) => {
                     // Wait briefly for bridge readiness
@@ -187,6 +245,17 @@ function checkExistingStream(request) {
 }
 
 async function startVideoStream(request) {
+    if (pendingVideoStarts.has(request.videoId)) return pendingVideoStarts.get(request.videoId);
+    const pending = createVideoStream(request);
+    pendingVideoStarts.set(request.videoId, pending);
+    try {
+        return await pending;
+    } finally {
+        pendingVideoStarts.delete(request.videoId);
+    }
+}
+
+async function createVideoStream(request) {
     const { videoId, tabId, frameId, settings, title } = request;
     
     // Check if we already have this stream active
@@ -215,37 +284,37 @@ async function startVideoStream(request) {
             console.warn('VDO not fully loaded after 5 seconds, proceeding anyway');
         }
         
-        const streamId = settings.streamId || generateStreamId();
-        const roomId = settings.roomId || '';
+        const { streamId, roomId } = normalizePublisherIds(settings);
         const server = settings.server || 'vdo.ninja';
+        const requestId = crypto.randomUUID();
         
         // Use event-based communication to call publisher functions
         const [result] = await chrome.scripting.executeScript({
             target: frameId ? { tabId: tabId, frameIds: [frameId] } : { tabId: tabId },
-            func: async (videoId, streamId, roomId, title, password, server, mic) => {
-                console.log('Sending publish request via events...');
+            func: async (videoId, streamId, roomId, title, password, server, mic, qualitySettings, requestId) => {
                 
                 return new Promise((resolve) => {
                     // Set up response listener
                     const responseHandler = (event) => {
-                        console.log('Received publish response:', event.detail);
+                        if (event.detail?.requestId !== requestId) return;
+                        clearTimeout(timeout);
                         window.removeEventListener('vdo-publish-response', responseHandler);
                         resolve(event.detail);
                     };
                     window.addEventListener('vdo-publish-response', responseHandler);
                     
-                    window.dispatchEvent(new CustomEvent('vdo-publish-request', {
-                        detail: { videoId, streamId, roomId, title, password, server, mic }
-                    }));
-                    
                     // Timeout after 10 seconds
-                    setTimeout(() => {
+                    const timeout = setTimeout(() => {
                         window.removeEventListener('vdo-publish-response', responseHandler);
+                        window.dispatchEvent(new CustomEvent('vdo-cancel-publish-request', { detail: { requestId } }));
                         resolve({ success: false, error: 'Publish request timed out after 10 seconds' });
                     }, 10000);
+                    window.dispatchEvent(new CustomEvent('vdo-publish-request', {
+                        detail: { requestId, videoId, streamId, roomId, title, password, server, mic, qualitySettings }
+                    }));
                 });
             },
-            args: [videoId, streamId, roomId, title, settings.password || '', server, request.mic || { include: false }]
+            args: [videoId, streamId, roomId, title, settings.password || '', server, request.mic || { include: false }, settings, requestId]
         });
         
         if (!result || !result.result || !result.result.success) {
@@ -278,41 +347,56 @@ async function startVideoStream(request) {
 }
 
 async function stopVideoStream(request) {
-    const { videoId, tabId } = request;
+    const { videoId } = request;
+    if (pendingVideoStarts.has(videoId)) await pendingVideoStarts.get(videoId);
     
     const publisher = activePublishers.get(videoId);
     if (!publisher) {
         return { success: false, error: 'Stream not found' };
     }
+    const tabId = publisher.tabId;
     
     try {
         // Best-effort stop in the original tab when available
         if (tabId) {
             try {
-                await chrome.scripting.executeScript({
-                    target: (publisher.frameId) ? { tabId: tabId, frameIds: [publisher.frameId] } : { tabId: tabId },
-                    func: async (streamId) => {
+                const [result] = await chrome.scripting.executeScript({
+                    target: (publisher.frameId != null) ? { tabId: tabId, frameIds: [publisher.frameId] } : { tabId: tabId },
+                    func: async (streamId, requestId) => {
                         return new Promise((resolve) => {
                             const responseHandler = (event) => {
+                                if (event.detail?.requestId !== requestId) return;
+                                clearTimeout(timeout);
                                 window.removeEventListener('vdo-stop-response', responseHandler);
                                 resolve(event.detail);
                             };
                             window.addEventListener('vdo-stop-response', responseHandler);
-                            window.dispatchEvent(new CustomEvent('vdo-stop-request', { detail: { streamId } }));
-                            setTimeout(() => {
+                            const timeout = setTimeout(() => {
                                 window.removeEventListener('vdo-stop-response', responseHandler);
                                 resolve({ success: false, error: 'Stop request timed out' });
                             }, 5000);
+                            window.dispatchEvent(new CustomEvent('vdo-stop-request', { detail: { streamId, requestId } }));
                         });
                     },
-                    args: [publisher.streamId]
+                    args: [publisher.streamId, crypto.randomUUID()]
                 });
+                if (!result?.result?.success) {
+                    return { success: false, error: result?.result?.error || 'Failed to stop publisher' };
+                }
             } catch (e) {
-                console.warn('Stop request script injection failed or tab unavailable:', e.message);
+                // A closed tab cannot retain a publisher. Otherwise keep its
+                // controls available so a failed stop can be retried.
+                try {
+                    await chrome.tabs.get(tabId);
+                    return { success: false, error: e.message };
+                } catch (_) {
+                    activePublishers.delete(videoId);
+                    return { success: true };
+                }
             }
 
             try {
-                await chrome.tabs.sendMessage(tabId, { type: 'stopCapture', videoId: videoId }, { frameId: publisher.frameId });
+                await chrome.tabs.sendMessage(tabId, { type: 'stopCapture', videoId: videoId }, publisher.frameId == null ? {} : { frameId: publisher.frameId });
             } catch (e) {
                 // Content script might be gone; ignore
             }
@@ -322,20 +406,31 @@ async function stopVideoStream(request) {
         return { success: true };
     } catch (error) {
         console.error('Error stopping stream:', error);
-        activePublishers.delete(videoId);
         return { success: false, error: error.message };
     }
 }
 
 async function startTabCapture(request) {
+    if (pendingTabCapture) return { success: false, error: 'A tab capture is already starting' };
+    const pending = { tabId: request.tabId, cancelled: false };
+    pendingTabCapture = pending;
+    try {
+        return await createTabCapture(request, pending);
+    } finally {
+        if (pendingTabCapture === pending) pendingTabCapture = null;
+    }
+}
+
+async function createTabCapture(request, pending) {
     const { tabId, audio, video, settings } = request;
     
     // Get tab info for title
-    const tab = await chrome.tabs.get(tabId);
     
     try {
-        const streamId = settings.streamId || generateStreamId();
-        const roomId = settings.roomId || null;
+        const tab = await chrome.tabs.get(tabId);
+        if (!audio && !video) return { success: false, error: 'Select audio or video to capture' };
+        if (activeTabs.size) return { success: false, error: 'Stop the current tab capture before starting another' };
+        const { streamId, roomId } = normalizePublisherIds(settings);
         const server = settings.server || 'vdo.ninja';
         
         // Get media stream ID for tab capture (Manifest V3)
@@ -354,28 +449,17 @@ async function startTabCapture(request) {
         if (!mediaStreamId) {
             return { success: false, error: 'Failed to get media stream ID' };
         }
+        if (pending.cancelled) return { success: false, error: 'Tab capture cancelled' };
         
-        // Create offscreen document for tab capture
-        try {
-            await chrome.offscreen.createDocument({
-                url: 'offscreen.html',
-                reasons: ['USER_MEDIA'],
-                justification: 'Tab capture requires getUserMedia in offscreen document'
-            });
-            
-        } catch (e) {
-            // Document might already exist
-            
-        }
-        
-        // Wait a moment for offscreen document to be ready
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await ensureOffscreenDocument();
+        if (pending.cancelled) return { success: false, error: 'Tab capture cancelled' };
         
         // Start tab capture in offscreen document
         
         const captureResult = await new Promise((resolve) => {
             chrome.runtime.sendMessage({
                 type: 'startTabCapture',
+                target: 'offscreen',
                 mediaStreamId: mediaStreamId,
                 audio: audio,
                 video: video,
@@ -386,14 +470,15 @@ async function startTabCapture(request) {
                 tabId: tabId,
                 title: tab.title || 'Tab Capture'
             }, (response) => {
-                
-                resolve(response);
+                const error = chrome.runtime.lastError;
+                resolve(error ? { success: false, error: error.message } : response);
             });
         });
         
         if (!captureResult || !captureResult.success) {
             return { success: false, error: captureResult?.error || 'Failed to capture tab' };
         }
+        if (pending.cancelled) return { success: false, error: 'Tab capture cancelled' };
         
         // Store the active tab capture with title and settings
         activeTabs.set(tabId, {
@@ -422,20 +507,30 @@ async function startTabCapture(request) {
 
 async function stopTabCapture(request) {
     const { tabId } = request;
+    const pending = pendingTabCapture?.tabId === tabId ? pendingTabCapture : null;
+    if (pending) {
+        pending.cancelled = true;
+        try {
+            await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stopTabCapture', tabId });
+        } catch (e) {
+            // The offscreen document may not exist yet. The cancelled startup
+            // checks its token before sending any start command.
+        }
+        if (pendingTabCapture === pending) pendingTabCapture = null;
+        return { success: true };
+    }
     
     const tabCapture = activeTabs.get(tabId);
     if (!tabCapture) {
         return { success: false, error: 'Tab capture not found' };
     }
     
-    if (tabCapture.stream) {
-        tabCapture.stream.getTracks().forEach(track => track.stop());
-    }
-    
-    await chrome.tabs.sendMessage(tabId, {
-        type: 'unpublishStream',
-        streamId: tabCapture.streamId
+    const response = await chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: 'stopTabCapture',
+        tabId
     });
+    if (!response?.success) return response || { success: false, error: 'No response from tab capture' };
     
     activeTabs.delete(tabId);
     
@@ -469,7 +564,8 @@ function getActiveStreams() {
     return streams;
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+    await stateReady;
     const publishers = Array.from(activePublishers.entries())
         .filter(([_, pub]) => pub.tabId === tabId);
     
@@ -477,11 +573,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
         activePublishers.delete(id);
     });
     
-    if (activeTabs.has(tabId)) {
+    if (activeTabs.has(tabId) || pendingTabCapture?.tabId === tabId) {
         // Politely stop offscreen publisher; it will send bye and cleanup
         try {
-            chrome.runtime.sendMessage({ type: 'stopTabCapture' });
+            await stopTabCapture({ tabId });
         } catch (e) {}
         activeTabs.delete(tabId);
     }
+    await savePublisherState();
 });

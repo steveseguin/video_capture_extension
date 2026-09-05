@@ -24,6 +24,14 @@ jobs:
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Run regression checks
+      run: node --test tests/*.test.cjs
+
     - name: Get current version
       id: current_version
       run: |
@@ -76,6 +84,8 @@ jobs:
         cp *.html dist/ 2>/dev/null || true
         cp *.css dist/ 2>/dev/null || true
         cp LICENSE dist/ 2>/dev/null || true
+        cp LICENSE-SDK dist/
+        cp CHANGELOG.md dist/
         cp README.md dist/ 2>/dev/null || true
         cp PRIVACY_JUSTIFICATIONS.md dist/ 2>/dev/null || true
         

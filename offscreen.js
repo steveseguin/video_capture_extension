@@ -2,6 +2,30 @@
 let mediaStream = null;
 let vdoPublisher = null;
 let sourceTabId = null;
+let captureStarting = false;
+let captureGeneration = 0;
+let removeCaptureListeners = () => {};
+
+function cleanupCapture() {
+    captureGeneration++;
+    captureStarting = false;
+    removeCaptureListeners();
+    removeCaptureListeners = () => {};
+    const publisher = vdoPublisher;
+    const stream = mediaStream;
+    vdoPublisher = null;
+    mediaStream = null;
+    sourceTabId = null;
+    try { publisher?.sendData?.({ bye: true }, { allowFallback: false }); } catch (e) {}
+    try { publisher?.disconnect(); } catch (e) {}
+    stream?.getTracks().forEach(track => track.stop());
+}
+
+function sendCaptureBye() {
+    try { vdoPublisher?.sendData?.({ bye: true }, { allowFallback: false }); } catch (e) {}
+}
+window.addEventListener('pagehide', sendCaptureBye);
+window.addEventListener('beforeunload', sendCaptureBye);
 
 // offscreen document loaded
 
@@ -9,6 +33,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // received message in offscreen doc
     
     if (request.type === 'startTabCapture') {
+        if (captureStarting || mediaStream) {
+            sendResponse({ success: false, error: 'Stop the current tab capture before starting another' });
+            return false;
+        }
+        captureStarting = true;
+        const generation = ++captureGeneration;
         const { mediaStreamId, audio, video, streamId, roomId, server, settings, tabId, title } = request;
         sourceTabId = tabId || null;
         
@@ -28,10 +58,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
             } : false
         }).then(async (stream) => {
+            if (generation !== captureGeneration) {
+                stream.getTracks().forEach(track => track.stop());
+                throw new Error('Tab capture was stopped during startup');
+            }
             mediaStream = stream;
-            
-            
+            const checkCurrent = () => {
+                if (generation !== captureGeneration || stream.getTracks().some(track => track.readyState === 'ended')) {
+                    throw new Error('Tab capture ended during startup');
+                }
+            };
+            const handleEnd = () => {
+                if (generation !== captureGeneration) return;
+                const endedTabId = sourceTabId;
+                cleanupCapture();
+                if (endedTabId != null) chrome.runtime.sendMessage({ type: 'tabCaptureEnded', tabId: endedTabId }).catch(() => {});
+            };
+            stream.getTracks().forEach(track => track.addEventListener('ended', handleEnd, { once: true }));
+            removeCaptureListeners = () => stream.getTracks().forEach(track => track.removeEventListener?.('ended', handleEnd));
             try {
+                checkCurrent();
                 // Initialize VDO.Ninja SDK with room configuration
                 const sdkConfig = {
                     salt: "vdo.ninja",
@@ -49,6 +95,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 } else {
                     throw new Error('No SDK constructor available');
                 }
+                const publisher = vdoPublisher;
                 
                 // Listen for connection events
                 vdoPublisher.addEventListener('socket-connected', (e) => {});
@@ -70,52 +117,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 // Connect with password if provided (empty uses default)
                 const connectOpts = { password: (settings?.password !== undefined ? settings.password : undefined) };
                 if (hostOverride) connectOpts.host = hostOverride;
-                await vdoPublisher.connect(connectOpts);
+                await publisher.connect(connectOpts);
+                checkCurrent();
                 
                 
                 // If room is specified, join it
-                if (roomId && vdoPublisher.room) {
+                if (roomId && publisher.room) {
                     
-                    await vdoPublisher.joinRoom({ room: roomId, password: (settings?.password !== undefined ? settings.password : undefined) });
+                    await publisher.joinRoom({ room: roomId, password: (settings?.password !== undefined ? settings.password : undefined) });
+                    checkCurrent();
                 }
                 
                 // Prepare publish options - use settings from popup
                 const publishOptions = {
                     streamID: streamId,
                     publish: true,
-                    bitrate: settings?.bitrate || 6000,
-                    codec: settings?.codec || 'h264',
+                    videoBitrate: `${settings?.bitrate || 6000}kbps`,
+                    videoCodec: settings?.codec || undefined,
                     info: { label: title || 'Tab Capture' }
                 };
                 if (settings?.password !== undefined) publishOptions.password = settings.password;
                 
                 // Publish the stream
                 
-                const publishResult = await vdoPublisher.publish(mediaStream, publishOptions);
+                await publisher.publish(stream, publishOptions);
+                checkCurrent();
                 
                 
                 
 
                 // (Label metadata broadcast intentionally omitted; handled externally)
 
-                // Hook track end to signal bye and cleanup
-                try {
-                    const sendBye = () => {
-                        try { vdoPublisher && vdoPublisher.sendData && vdoPublisher.sendData({ bye: true }, { allowFallback: false }); } catch (e) {}
-                    };
-                    const handleEnd = async () => {
-                        try { sendBye(); } catch (e) {}
-                        await new Promise(r => setTimeout(r, 50));
-                        try { vdoPublisher && vdoPublisher.disconnect && vdoPublisher.disconnect(); } catch (e) {}
-                        try { mediaStream && mediaStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-                        try { if (sourceTabId) chrome.runtime.sendMessage({ type: 'stopTabCapture', tabId: sourceTabId }); } catch (e) {}
-                    };
-                    mediaStream.getTracks().forEach(t => t.addEventListener('ended', handleEnd, { once: true }));
-                    // Offscreen document unload
-                    window.addEventListener('pagehide', sendBye);
-                    window.addEventListener('beforeunload', sendBye);
-                } catch (e) {}
                 
+                captureStarting = false;
                 sendResponse({ 
                     success: true, 
                     streamActive: true,
@@ -126,15 +160,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 });
             } catch (error) {
                 console.error('Failed to publish to VDO.Ninja:', error);
+                if (generation === captureGeneration) cleanupCapture();
                 sendResponse({ 
-                    success: true, // Stream captured but publishing failed
-                    streamActive: true,
-                    audioTracks: mediaStream.getAudioTracks().length,
-                    videoTracks: mediaStream.getVideoTracks().length,
+                    success: false,
+                    streamActive: false,
                     error: 'Publishing failed: ' + error.message
                 });
             }
         }).catch(error => {
+            if (generation === captureGeneration) cleanupCapture();
             console.error('Tab capture error in offscreen:', error);
             sendResponse({ success: false, error: error.message });
         });
@@ -142,29 +176,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Will respond asynchronously
         
     } else if (request.type === 'stopTabCapture') {
-        // Politely notify and cleanup
-        try { vdoPublisher && vdoPublisher.sendData && vdoPublisher.sendData({ bye: true }, { allowFallback: false }); } catch (e) {}
-        setTimeout(() => {
-            try {
-                if (vdoPublisher) {
-                    vdoPublisher.disconnect();
-                    vdoPublisher = null;
-                }
-            } catch (e) {
-                console.error('Error disconnecting VDO publisher:', e);
-            }
-            try {
-                if (mediaStream) {
-                    mediaStream.getTracks().forEach(track => track.stop());
-                    mediaStream = null;
-                }
-            } catch (e) {}
-            sendResponse({ success: true });
-        }, 50);
-        return true; // respond asynchronously after delay
+        if (request.target !== 'offscreen') return false;
+        if (sourceTabId != null && request.tabId !== sourceTabId) {
+            sendResponse({ success: false, error: 'Tab capture belongs to another tab' });
+            return false;
+        }
+        cleanupCapture();
+        sendResponse({ success: true });
+        return false;
     } else if (request.type === 'getTabThumbnail') {
         // Return a small thumbnail from the active mediaStream if available
-        if (!mediaStream) {
+        if (!mediaStream || !mediaStream.getVideoTracks().length) {
             sendResponse({ success: false, error: 'No active tab capture' });
             return false;
         }
@@ -177,17 +199,32 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             canvas.width = width; canvas.height = height;
             const ctx = canvas.getContext('2d');
 
+            let finished = false;
+            let scheduled = false;
+            const finish = response => {
+                if (finished) return;
+                finished = true;
+                clearTimeout(timeout);
+                video.pause();
+                video.srcObject = null;
+                sendResponse(response);
+            };
+            const timeout = setTimeout(() => finish({ success: false, error: 'Thumbnail request timed out' }), 2000);
+
             const draw = () => {
+                if (finished) return;
                 try {
                     ctx.drawImage(video, 0, 0, width, height);
                     const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-                    sendResponse({ success: true, dataUrl });
+                    finish({ success: true, dataUrl });
                 } catch (e) {
-                    sendResponse({ success: false, error: e.message });
+                    finish({ success: false, error: e.message });
                 }
             };
 
             const onReady = () => {
+                if (finished || scheduled) return;
+                scheduled = true;
                 if (video.requestVideoFrameCallback) {
                     video.requestVideoFrameCallback(() => draw());
                 } else {
@@ -197,7 +234,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
             video.addEventListener('loadeddata', onReady, { once: true });
             video.addEventListener('playing', onReady, { once: true });
-            video.play().catch(() => {});
+            video.play().catch(error => finish({ success: false, error: error.message }));
             return true; // async response
         } catch (e) {
             sendResponse({ success: false, error: e.message });
