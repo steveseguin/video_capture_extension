@@ -141,12 +141,17 @@ async function handleMessage(request, sender) {
         case 'stopStream':
             return await stopVideoStream(request);
 
-        case 'publisherEnded':
-            // Page-level publisher cleaned up; remove our bookkeeping
-            if (request && request.videoId && activePublishers.has(request.videoId)) {
+        case 'publisherEnded': {
+            // A timed-out startup may finish cleaning up after a retry has
+            // published the same video. Only retire the reporting publisher.
+            const publisher = activePublishers.get(request.videoId);
+            if (publisher && publisher.streamId === request.streamId &&
+                publisher.tabId === sender.tab?.id &&
+                (publisher.frameId ?? 0) === (sender.frameId ?? 0)) {
                 activePublishers.delete(request.videoId);
             }
             return { success: true };
+        }
 
         case 'tabCaptureEnded':
             if (pendingTabCapture?.tabId === request.tabId) pendingTabCapture.cancelled = true;

@@ -9666,7 +9666,7 @@ function setupPublisherFunctions() {
                     if (rec && rec.audioContext && typeof rec.audioContext.close === 'function') { rec.audioContext.close(); }
                 } catch (e) {}
                 try { if (window.vdoPublishers) delete window.vdoPublishers[streamId]; } catch (e) {}
-                try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
+                try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId, streamId }); } catch (e) {}
                 debugLog('cleanup:complete', { streamId, videoId, reason: reasonLabel });
             };
 
@@ -10001,7 +10001,7 @@ function setupPublisherFunctions() {
                     try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
                     try { if (audioContext && typeof audioContext.close === 'function') audioContext.close(); } catch (e) {}
                     delete window.vdoPublishers[streamId];
-                    try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
+                    try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId, streamId }); } catch (e) {}
                 }
             }
             
@@ -10185,7 +10185,7 @@ try {
             for (const id of Object.keys(window.vdoPublishers)) {
                 const { vdo, videoId } = window.vdoPublishers[id] || {};
                 try { vdo && vdo.sendData && vdo.sendData({ bye: true }, { allowFallback: false }); } catch (e) {}
-                try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId }); } catch (e) {}
+                try { chrome && chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.sendMessage({ type: 'publisherEnded', videoId, streamId: id }); } catch (e) {}
             }
         } catch (e) {}
     };

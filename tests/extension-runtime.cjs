@@ -268,7 +268,7 @@ const http = require('node:http');
                     const handler = event => {
                         if (event.detail?.error !== 'Publish request cancelled') return;
                         window.removeEventListener('vdo-publish-response', handler);
-                        resolve(!window.vdoPublishers?.['late-runtime']);
+                        resolve(!window.vdoPublishers?.['late_runtime']);
                     };
                     window.addEventListener('vdo-publish-response', handler);
                 });
@@ -279,6 +279,15 @@ const http = require('node:http');
         }), { tabId: frames.tabId, frameId: frame.frameId, videoId: frame.result.videos[0].id });
         assert.equal(timedOut.success, false);
         assert.match(timedOut.error, /timed out/);
+        await worker.evaluate(async ({ tabId, frameId }) => {
+            await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: () => {
+                VDONinjaSDK.prototype.connect = async function() {};
+            } });
+        }, { tabId: frames.tabId, frameId: frame.frameId });
+        const retried = await popup.evaluate(({ tabId, frameId, videoId }) => chrome.runtime.sendMessage({
+            type: 'startStream', tabId, frameId, videoId, title: 'Retry publish', settings: { streamId: 'retry_runtime' }
+        }), { tabId: frames.tabId, frameId: frame.frameId, videoId: frame.result.videos[0].id });
+        assert.equal(retried.success, true, retried.error);
         const lateCleaned = await worker.evaluate(async ({ tabId, frameId }) => {
             const [result] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: async () => {
                 window.finishLateConnection();
@@ -287,7 +296,11 @@ const http = require('node:http');
             return result.result;
         }, { tabId: frames.tabId, frameId: frame.frameId });
         assert.equal(lateCleaned, true);
-        console.log('PASS: reused stream IDs are rejected and publishing after the real timeout cleans up its publisher');
+        const afterLateCleanup = await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'getActiveStreams' }));
+        assert.ok(afterLateCleanup.some(stream => stream.streamId === 'retry_runtime'), 'Late cleanup must preserve retry controls');
+        const retryStopped = await popup.evaluate(videoId => chrome.runtime.sendMessage({ type: 'stopStream', videoId }), frame.result.videos[0].id);
+        assert.equal(retryStopped.success, true, retryStopped.error);
+        console.log('PASS: late publishing cleanup preserves a successful retry and its Stop control');
 
         await worker.evaluate(async ({ tabId, frameId }) => {
             await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: () => {
