@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Update the bundled VDO.Ninja SDK to 1.6.2.
+- Keep Discord stream IDs and viewer links when identifiable video sources move or return after layout changes and camera interruptions.
+- Distinguish Discord cameras from screen shares and avoid assigning ambiguous tiles to another source.
+- Preserve Discord's original media tracks when replacing or stopping captures, and keep microphone mixing during source replacement.
+- Keep active stream controls when cleanup from a timed-out publish finishes after a successful retry.
+
 ## 1.1.8
 
 - Update both bundled SDK copies to the official VDO.Ninja SDK 1.6.0 and include its MPL-2.0 license.

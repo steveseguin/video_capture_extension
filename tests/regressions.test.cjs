@@ -23,7 +23,7 @@ test('both SDK copies match and expose the expected API', () => {
     const sdk = read('vdoninja-sdk.js');
     assert.ok(read('combined-vdo-scripts.js').startsWith(sdk + '\n\n// Setting up VDO publisher functions...'));
     const SDK = require('../vdoninja-sdk.js');
-    assert.equal(SDK.VERSION, '1.6.0');
+    assert.equal(SDK.VERSION, '1.6.2');
     for (const method of ['connect', 'joinRoom', 'publish', 'disconnect', 'sendData']) {
         assert.equal(typeof SDK.prototype[method], 'function');
     }

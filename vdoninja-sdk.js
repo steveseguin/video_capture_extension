@@ -1,4 +1,4 @@
-/*! VDO.Ninja SDK v1.6.0
+/*! VDO.Ninja SDK v1.6.2
  * Copyright (c) 2025-2026 Steve Seguin. All rights reserved.
  * SPDX-License-Identifier: MPL-2.0
  *
@@ -378,7 +378,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @returns {string} Current SDK version
          */
         static get VERSION() {
-            return '1.6.0';
+            return '1.6.2';
         }
         
         /**
@@ -723,6 +723,9 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             this._maxReconnectAttempts = options.maxReconnectAttempts || 5;
             this._reconnectDelay = options.reconnectDelay || 1000;
             this._reconnectTimer = null;
+            this._reconnectGeneration = 0;
+            // Socket, room and view waits must settle when local teardown starts.
+            this._pendingConnectionWaits = new Set();
             this._signalingQueue = [];
             this._signalingQueueLimit = Number.isFinite(options.signalingQueueLimit) ?
                 Math.max(1, Math.floor(options.signalingQueueLimit)) : 30;
@@ -855,6 +858,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @returns {Promise} Resolves when connected
          */
         async connect(options = {}) {
+            const generation = this._reconnectGeneration;
             // An explicit disconnect owns the current socket and peer generation until
             // its close event has fired. Waiting here prevents a late close from the old
             // socket from marking a newly connected generation as disconnected.
@@ -864,6 +868,9 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 if (this._teardownPromise === pendingTeardown) {
                     this._teardownPromise = null;
                 }
+            }
+            if (generation !== this._reconnectGeneration) {
+                throw new Error('Connection operation cancelled by disconnect');
             }
 
             // Initialize required properties if missing
@@ -909,12 +916,21 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             }
             
             return new Promise((resolve, reject) => {
+                const cancel = () => finish(new Error('Connection operation cancelled by disconnect'));
+                const finish = (error) => {
+                    this._pendingConnectionWaits.delete(cancel);
+                    if (error) reject(error);
+                    else resolve();
+                };
+                this._pendingConnectionWaits.add(cancel);
                 try {
+                    this._assertConnectionGeneration(generation);
                     const signaling = new WebSocket(this.host);
                     this.signaling = signaling;
                     
                     signaling.onopen = () => {
-                        if (this.signaling !== signaling) return;
+                        if (this.signaling !== signaling || this._intentionalDisconnect ||
+                            generation !== this._reconnectGeneration) return;
                         this._log('WebSocket connected');
                         this.state.connected = true;
                         if (!this._isReconnecting) {
@@ -926,13 +942,15 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         this._flushSignalingQueue();
                         
                         this._emit('connected');
+                        if (generation !== this._reconnectGeneration || this._intentionalDisconnect) return;
                         this._emitIframeCompatible('hss-connection', 'connected');
                         
-                        resolve();
+                        finish();
                     };
                     
                     signaling.onmessage = async (event) => {
-                        if (this.signaling !== signaling) return;
+                        if (this.signaling !== signaling || this._intentionalDisconnect ||
+                            generation !== this._reconnectGeneration) return;
                         try {
                             const msg = JSON.parse(event.data);
                             this._logMessage('IN', msg, 'WebSocket');
@@ -946,7 +964,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         if (this.signaling !== signaling) return;
                         this._log('WebSocket error:', error);
                         this._emit('error', { error: 'WebSocket error', details: error });
-                        reject(error);
+                        finish(error);
                     };
                     
                     signaling.onclose = () => {
@@ -954,6 +972,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         // connection generation. This also makes a forced-close fallback
                         // harmless if its close event arrives unusually late.
                         if (this.signaling !== signaling) return;
+                        finish(new Error('Signaling socket closed before connection completed'));
                         this._log('WebSocket closed');
                         this.state.connected = false;
                         // These describe the current socket generation. Desired room,
@@ -965,10 +984,9 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         const willReconnect = !intentional &&
                             this._reconnectAttempts < this._maxReconnectAttempts;
 
-                        // This fires when the socket closes, which is not the same thing
-                        // as teardown being finished. Listeners that need "cleanup is
-                        // done" should use 'teardownComplete' instead.
-                        this._emit('disconnected', {
+                        // Local disconnect owns its notification after teardown. A socket
+                        // close during that operation must not notify callers twice.
+                        if (!intentional) this._emit('disconnected', {
                             intentional: intentional,
                             reason: intentional ? 'local-disconnect' : 'socket-closed',
                             willReconnect: willReconnect,
@@ -983,7 +1001,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                     
                 } catch (error) {
                     this._log('Connection error:', error);
-                    reject(error);
+                    finish(error);
                 }
             });
         }
@@ -996,9 +1014,9 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * the process before that resolves can crash the native WebRTC module mid-teardown.
          *
          * The returned promise is new in v1.5. Callers that ignore it behave exactly as
-         * before. The `disconnected` event is not a completion signal — it also fires when
-         * the socket closes, which happens partway through. Use the resolved promise or
-         * the `teardownComplete` event.
+         * before. Local disconnect emits `disconnected` once, after teardown. Unexpected
+         * socket loss emits it immediately with phase 'socket'. Use the resolved promise
+         * or `teardownComplete` when waiting specifically for local cleanup.
          *
          * @returns {Promise<void>} Resolves once teardown is complete
          */
@@ -1009,6 +1027,18 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             if (this._teardownPromise) return this._teardownPromise;
 
             this._intentionalDisconnect = true;
+            // Invalidate async reconnect work that has already left its timer.
+            this._reconnectGeneration++;
+            for (const cancel of this._pendingConnectionWaits) cancel();
+            this._pendingConnectionWaits.clear();
+
+            if (this._pendingRequests) {
+                for (const pending of Object.values(this._pendingRequests)) {
+                    clearTimeout(pending.timeoutId);
+                    pending.reject(new Error('Disconnected before request completed'));
+                }
+                this._pendingRequests = Object.create(null);
+            }
 
             // disconnect() has always represented a full local teardown. Do not
             // restore room/publish/view intent after a later explicit connect().
@@ -1020,6 +1050,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             if (this._stoppedViews) this._stoppedViews.clear();
             if (this._signalingQueue) this._signalingQueue.length = 0;
             if (this._pendingIceCandidates) this._pendingIceCandidates.clear();
+            if (this._pendingViews) this._pendingViews.clear();
             if (this._failedViewerConnections) {
                 for (const failed of this._failedViewerConnections.values()) {
                     if (failed && failed.timer) clearTimeout(failed.timer);
@@ -1108,7 +1139,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 this._viewRetryTimers.clear();
 
                 // WebSocket.close() is asynchronous. Keep this generation current until
-                // its close handler has run so the socket-phase event precedes teardown.
+                // its close handler has run before completing local teardown.
                 await this._closeSignalingSocket(signalingToClose);
                 if (this.signaling === signalingToClose) {
                     this.signaling = null;
@@ -1246,8 +1277,10 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @private
          */
         async _attemptReconnect() {
-            if (this._isReconnecting) return;
-            
+            if (this._isReconnecting || this._intentionalDisconnect) return;
+
+            const generation = this._reconnectGeneration;
+            const isCurrent = () => generation === this._reconnectGeneration && !this._intentionalDisconnect;
             this._isReconnecting = true;
             this._reconnectAttempts++;
             
@@ -1256,20 +1289,26 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             
             this._emit('reconnecting', { 
                 attempt: this._reconnectAttempts, 
-                maxAttempts: this._maxReconnectAttempts 
+                maxAttempts: this._maxReconnectAttempts
             });
-            
+            if (!isCurrent()) return;
+
             this._reconnectTimer = setTimeout(async () => {
+                if (!isCurrent()) return;
+                this._reconnectTimer = null;
                 try {
                     await this.connect();
+                    if (!isCurrent()) return;
 
                     await this._restoreConnectionIntent();
-                    
-                    this._emit('reconnected');
+                    if (!isCurrent()) return;
+
                     this._reconnectAttempts = 0;
                     this._isReconnecting = false;
+                    this._emit('reconnected');
                     
                 } catch (error) {
+                    if (!isCurrent()) return;
                     this._log('Reconnection failed:', error);
                     this._isReconnecting = false;
                     
@@ -1288,7 +1327,9 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @private
          */
         async _restoreConnectionIntent() {
-            if (this._restoringIntent) return;
+            if (this._restoringIntent || this._intentionalDisconnect) return;
+            const generation = this._reconnectGeneration;
+            const isCurrent = () => generation === this._reconnectGeneration && !this._intentionalDisconnect;
             this._restoringIntent = true;
 
             try {
@@ -1298,8 +1339,11 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                     await this.joinRoom({
                         ...intent.room.options,
                         room: intent.room.room,
-                        password: intent.room.password
+                        // Room intent stores the already-sanitized password.
+                        password: typeof intent.room.password === 'string'
+                            ? decodeURIComponent(intent.room.password) : intent.room.password
                     });
+                    if (!isCurrent()) return;
                 }
 
                 if (intent.publishing && intent.publishing.active) {
@@ -1313,21 +1357,31 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                     } else if (publishing.stream) {
                         await this.publish(publishing.stream, options);
                     }
+                    if (!isCurrent()) return;
                 }
 
                 if (intent.views && typeof intent.views.entries === 'function') {
                     for (const [streamID, viewOptions] of intent.views.entries()) {
+                        if (!isCurrent()) return;
                         if (this._stoppedViews && this._stoppedViews.has(streamID)) continue;
                         // Start each play restoration without serially waiting up to
                         // the view timeout for unavailable peers.
                         this.view(streamID, { ...viewOptions, _intentReplay: true }).catch(error => {
+                            if (!isCurrent()) return;
                             this._log('Failed to restore view intent for', streamID, error.message || error);
                             this._setupViewRetry(streamID, viewOptions, 2000);
                         });
                     }
                 }
             } finally {
-                this._restoringIntent = false;
+                if (isCurrent()) this._restoringIntent = false;
+            }
+        }
+
+        /** @private Reject work owned by an explicitly disconnected session. */
+        _assertConnectionGeneration(generation) {
+            if (generation !== this._reconnectGeneration || this._intentionalDisconnect) {
+                throw new Error('Connection operation cancelled by disconnect');
             }
         }
 
@@ -1396,6 +1450,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @returns {Promise} Resolves when room is joined
          */
         async joinRoom(options = {}) {
+            const generation = this._reconnectGeneration;
+            this._assertConnectionGeneration(generation);
             if (!this.state.connected) {
                 throw new Error('Not connected to signaling server');
             }
@@ -1407,7 +1463,10 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             }
 
             const room = this._sanitizeRoomName(options.room || this.room);
-            const password = this._sanitizePassword(options.password !== undefined ? options.password : this.password);
+            // Only caller-supplied passwords are raw. The instance value has already
+            // passed through VDO.Ninja's encodeURIComponent sanitization.
+            const password = options.password !== undefined
+                ? this._sanitizePassword(options.password) : this.password;
             
             if (!room) {
                 throw new Error('Room name is required');
@@ -1426,11 +1485,15 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 this.password = password;
             }
 
+            await this._ensurePasswordHash();
+            this._assertConnectionGeneration(generation);
+
             // Hash room name if password is not explicitly false
             let hashedRoom = room;
             const __effectivePasswordForRoom = this._getEffectivePassword();
             if (__effectivePasswordForRoom !== null) {
                 hashedRoom = await this._hashRoom(room, __effectivePasswordForRoom);
+                this._assertConnectionGeneration(generation);
             }
 
             this._log('Joining room:', room, 'with hash:', hashedRoom);
@@ -1452,17 +1515,30 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 joinMessage.claim = true;
             }
 
-            this._sendMessageWS(joinMessage);
+            this._assertConnectionGeneration(generation);
 
             // Wait for room join confirmation (listing message)
             return new Promise((resolve, reject) => {
+                const cleanup = () => {
+                    clearTimeout(timeout);
+                    this.removeEventListener('_roomJoined', handleListing);
+                    this._pendingConnectionWaits.delete(cancel);
+                };
+                const cancel = () => {
+                    cleanup();
+                    reject(new Error('Connection operation cancelled by disconnect'));
+                };
                 const timeout = setTimeout(() => {
+                    cleanup();
                     reject(new Error('Room join timeout'));
                 }, 10000);
 
                 const handleListing = (event) => {
-                    clearTimeout(timeout);
-                    this.removeEventListener('_roomJoined', handleListing);
+                    if (generation !== this._reconnectGeneration || this._intentionalDisconnect) {
+                        cancel();
+                        return;
+                    }
+                    cleanup();
                     
                     this.state.room = room;
                     this.state.roomJoined = true;
@@ -1472,6 +1548,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 };
 
                 this.addEventListener('_roomJoined', handleListing);
+                this._pendingConnectionWaits.add(cancel);
+                this._sendMessageWS(joinMessage);
             });
         }
 
@@ -1506,6 +1584,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @returns {Promise} Resolves when publishing starts
          */
         async publish(stream, options = {}) {
+            const generation = this._reconnectGeneration;
+            this._assertConnectionGeneration(generation);
             if (!this.state.connected) {
                 throw new Error('Not connected to signaling server');
             }
@@ -1523,11 +1603,13 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             
             // Resolve desired media preferences for outgoing tracks
             const mediaPreferences = await this._extractPublisherMediaOptions(options);
+            this._assertConnectionGeneration(generation);
             if (mediaPreferences) {
                 this._publishMediaConfig = mediaPreferences;
             }
             if (this._publishMediaConfig) {
                 await this._applyLocalMediaPreferences(this.localStream, this._publishMediaConfig);
+                this._assertConnectionGeneration(generation);
             }
 
             // Use provided streamID, fall back to pending value from constructor/property, then generate
@@ -1565,8 +1647,9 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             if (!this.state.roomJoined && options.room) {
                 await this.joinRoom({ 
                     room: options.room, 
-                    password: options.password !== undefined ? options.password : this.password 
+                    password: options.password
                 });
+                this._assertConnectionGeneration(generation);
             }
 
             // Generate hashed streamID
@@ -1575,6 +1658,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 const __effectivePassword = this._getEffectivePassword();
                 if (__effectivePassword !== null) {
                     hashedStreamID = await this._hashStreamID(streamID, __effectivePassword);
+                    this._assertConnectionGeneration(generation);
                 }
             }
 
@@ -1609,6 +1693,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             };
 
             this._emit('publishing', { streamID, hashedStreamID });
+            this._assertConnectionGeneration(generation);
             
             // Add our own stream to tracking
             if (this.streams) {
@@ -1635,6 +1720,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @returns {Promise<string>} Stream ID
          */
         async announce(options = {}) {
+            const generation = this._reconnectGeneration;
+            this._assertConnectionGeneration(generation);
             if (!this.state.connected) {
                 throw new Error('Not connected to signaling server');
             }
@@ -1642,6 +1729,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             if (options.role !== undefined) {
                 console.warn('[VDONinja SDK] announce({ role }) is not used. Remove role and just call announce().');
                 this._emit('alert', { message: 'announce({ role }) is ignored. Remove role and call announce({ streamID }).' });
+                this._assertConnectionGeneration(generation);
             }
 
             // Persist label if provided for downstream DC open
@@ -1678,8 +1766,9 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             if (!this.state.roomJoined && options.room) {
                 await this.joinRoom({ 
                     room: options.room, 
-                    password: options.password !== undefined ? options.password : this.password 
+                    password: options.password
                 });
+                this._assertConnectionGeneration(generation);
             }
 
             // Generate hashed streamID
@@ -1688,6 +1777,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 const __effectivePassword = this._getEffectivePassword();
                 if (__effectivePassword !== null) {
                     hashedStreamID = await this._hashStreamID(streamID, __effectivePassword);
+                    this._assertConnectionGeneration(generation);
                 }
             }
 
@@ -1833,6 +1923,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @returns {Promise<RTCPeerConnection>} The peer connection
          */
         async view(streamID, options = {}) {
+            const generation = this._reconnectGeneration;
+            this._assertConnectionGeneration(generation);
             if (!this.state.connected) {
                 throw new Error('Not connected to signaling server');
             }
@@ -1865,6 +1957,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                     const __effectivePassword = this._getEffectivePassword();
                     if (__effectivePassword !== null) {
                         hashedStreamID = await this._hashStreamID(streamID, __effectivePassword);
+                        this._assertConnectionGeneration(generation);
                     }
                 }
                 
@@ -1910,13 +2003,25 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 // The connection will be created when we receive the offer
                 // For now, return a promise that resolves when connection is ready
                 return new Promise((resolve, reject) => {
+                    const cleanup = () => {
+                        clearInterval(checkConnection);
+                        clearTimeout(timeout);
+                        this._pendingConnectionWaits.delete(cancel);
+                    };
+                    const cancel = () => {
+                        cleanup();
+                        reject(new Error('Connection operation cancelled by disconnect'));
+                    };
                     const checkConnection = setInterval(() => {
+                        if (generation !== this._reconnectGeneration || this._intentionalDisconnect) {
+                            cancel();
+                            return;
+                        }
                         // Look for a connection with this streamID
                         for (const [uuid, connections] of this.connections) {
                             const conn = connections.viewer;
                             if (conn && conn.streamID === streamID && conn.pc) {
-                                clearInterval(checkConnection);
-                                clearTimeout(timeout);
+                                cleanup();
                                 this._pendingViews.delete(streamID);
                                 resolve(conn.pc);
                                 return;
@@ -1925,17 +2030,22 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                     }, 100);
 
                     const timeout = setTimeout(() => {
-                        clearInterval(checkConnection);
+                        if (generation !== this._reconnectGeneration || this._intentionalDisconnect) {
+                            cancel();
+                            return;
+                        }
+                        cleanup();
                         // Don't reject - instead set up retry mechanism
                         this._log(`Stream ${streamID} not available yet, will retry in 15 minutes`);
                         this._setupViewRetry(streamID, options);
                         resolve(null); // Resolve without error - we're still waiting
                     }, 15000);
+                    this._pendingConnectionWaits.add(cancel);
                 });
 
             } catch (error) {
                 this._log('Error in view:', error.message);
-                this._pendingViews.delete(streamID);
+                if (generation === this._reconnectGeneration) this._pendingViews.delete(streamID);
                 throw error;
             }
         }
@@ -1947,6 +2057,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @param {Object} options - View options
          */
         _setupViewRetry(streamID, options, delay = this._viewRetryInterval) {
+            if (this._intentionalDisconnect || this._stoppedViews.has(streamID)) return;
+            const generation = this._reconnectGeneration;
             // Clear any existing retry timer for this stream
             if (this._viewRetryTimers.has(streamID)) {
                 clearTimeout(this._viewRetryTimers.get(streamID));
@@ -1954,6 +2066,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             
             // Set up new retry timer
             const retryTimer = setTimeout(() => {
+                if (generation !== this._reconnectGeneration || this._intentionalDisconnect ||
+                    this._stoppedViews.has(streamID)) return;
                 this._log(`Retrying view for stream: ${streamID}`);
                 this._viewRetryTimers.delete(streamID);
                 
@@ -2093,7 +2207,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 channels: new Map(), // label -> RTCDataChannel, including the control channel
                 streamID: null,
                 session: null,  // Session ID for this WebRTC connection
-                info: {label: options?.label || null},
+                info: {}, // Remote metadata, populated by incoming info messages
+                localInfo: options?.label ? { label: options.label } : {},
                 obsState: {},
                 allowAudio: true,
                 allowVideo: true,
@@ -4204,8 +4319,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 // Send publisher info (label, meta, etc) to viewer when DC opens
                 if (connection.type === 'publisher') {
                     try {
-                        // Merge connection.info and _pendingInfo to build outbound info payload
-                        const infoCombined = Object.assign({}, this._pendingInfo || {}, connection.info || {});
+                        // Never echo received peer metadata as our own publisher identity.
+                        const infoCombined = Object.assign({}, this._pendingInfo || {}, connection.localInfo || {});
                         // Sanitize string fields
                         if (infoCombined.label) infoCombined.label = this._sanitizeLabel(infoCombined.label);
                         // _sanitizeMeta returns null for anything it cannot represent (an
@@ -4334,6 +4449,16 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         });
                     }
 
+                    // Metadata can accompany preferences or other control fields.
+                    if (msg.info && typeof msg.info === 'object' && !Array.isArray(msg.info)) {
+                        connection.info = Object.assign(connection.info || {}, msg.info);
+                        this._emit('peerInfo', {
+                            uuid: connection.uuid,
+                            streamID: connection.streamID,
+                            info: connection.info
+                        });
+                    }
+
                     // Handle different message types
                     if (msg.description) {
                         this._log('Received SDP via data channel');
@@ -4356,14 +4481,6 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         if (this.localStream && this._updateTracksForConnection) {
                             await this._updateTracksForConnection(connection);
                         }
-                    } else if (msg.info && typeof msg.info === 'object') {
-                        // Update connection info (e.g., label) and emit event
-                        connection.info = Object.assign(connection.info || {}, msg.info);
-                        this._emit('peerInfo', {
-                            uuid: connection.uuid,
-                            streamID: connection.streamID,
-                            info: connection.info
-                        });
                     } else if (msg.ping) {
                         // Respond to ping regardless of role, matching reference behavior
                         try {
@@ -4841,6 +4958,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          */
         async _applyLocalMediaPreferences(stream, config) {
             if (!stream || !config) return;
+            const generation = this._reconnectGeneration;
 
             const videoSettings = config.video;
             if (!videoSettings || !videoSettings.resolution) return;
@@ -4864,6 +4982,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
 
             const videoTracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
             for (const track of videoTracks) {
+                if (generation !== this._reconnectGeneration || this._intentionalDisconnect) return;
                 if (!track || typeof track.applyConstraints !== 'function') continue;
                 try {
                     await track.applyConstraints(constraints);
@@ -5173,8 +5292,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                             msg.candidates = encrypted;
                             msg.vector = vector;
                         } catch (e) {
-                            // Fall back to plaintext if encryption fails
-                            msg.candidates = candidatesArr;
+                            // Never downgrade password-protected signaling to plaintext.
+                            throw e;
                         }
                     } else {
                         msg.candidates = candidatesArr;
@@ -5230,7 +5349,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         this._log('Encrypted ICE candidates bundle');
                     } catch (error) {
                         this._log('Failed to encrypt ICE candidates:', error);
-                        bundleMsg.candidates = candidates;
+                        this._emit('error', { error: 'Failed to encrypt ICE candidates', details: error.message, uuid: connection.uuid });
+                        return;
                     }
                 }
 
@@ -5819,7 +5939,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         this._log('Encrypted answer SDP');
                     } catch (error) {
                         this._log('Failed to encrypt answer:', error);
-                        answerMsg.description = answer;
+                        throw error;
                     }
                 } else {
                     answerMsg.description = answer;
@@ -6151,13 +6271,13 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
 
             // Create connection for the viewer
             const connection = await this._createConnection(msg.UUID, 'publisher');
-            // Propagate pending info/label into connection
+            // Keep outbound publisher metadata separate from received peer info.
             if (this._pendingLabel && typeof this._pendingLabel === 'string') {
-                connection.info = connection.info || {};
-                connection.info.label = this._sanitizeLabel(this._pendingLabel);
+                connection.localInfo = connection.localInfo || {};
+                connection.localInfo.label = this._sanitizeLabel(this._pendingLabel);
             }
             if (this._pendingInfo && typeof this._pendingInfo === 'object') {
-                connection.info = Object.assign(connection.info || {}, this._pendingInfo);
+                connection.localInfo = Object.assign(connection.localInfo || {}, this._pendingInfo);
             }
             connection.streamID = this.state.streamID;
 
@@ -6205,7 +6325,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         this._log('Encrypted offer SDP');
                     } catch (error) {
                         this._log('Failed to encrypt offer:', error);
-                        offerMsg.description = offer;
+                        throw error;
                     }
                 } else {
                     offerMsg.description = offer;
@@ -6240,11 +6360,11 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             // Create connection for the viewer
             const connection = await this._createConnection(msg.UUID, 'publisher');
             if (this._pendingLabel && typeof this._pendingLabel === 'string') {
-                connection.info = connection.info || {};
-                connection.info.label = this._sanitizeLabel(this._pendingLabel);
+                connection.localInfo = connection.localInfo || {};
+                connection.localInfo.label = this._sanitizeLabel(this._pendingLabel);
             }
             if (this._pendingInfo && typeof this._pendingInfo === 'object') {
-                connection.info = Object.assign(connection.info || {}, this._pendingInfo);
+                connection.localInfo = Object.assign(connection.localInfo || {}, this._pendingInfo);
             }
             connection.streamID = this.state.streamID;
             
@@ -6288,7 +6408,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         this._log('Encrypted offer SDP');
                     } catch (error) {
                         this._log('Failed to encrypt offer:', error);
-                        offerMsg.description = offer;
+                        throw error;
                     }
                 } else {
                     offerMsg.description = offer;
@@ -6308,6 +6428,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @returns {Promise<void>}
          */
         async _ensurePasswordHash() {
+            const generation = this._reconnectGeneration;
             if (this.password === false || this.password === null) {
                 this._passwordHash = null;
                 this._passwordHashKey = null;
@@ -6343,6 +6464,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                 } catch (error) {
                     this._log('Failed to ensure password hash:', error);
                 }
+                if (generation !== this._reconnectGeneration) return;
                 if (this._passwordHash && this._passwordHashKey === hashKey && typeof this._passwordHash === 'string' && this._passwordHash.length > 0) {
                     return;
                 }
@@ -6357,7 +6479,8 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
 
             try {
                 const hash = await promise;
-                if (this._passwordHashPromise === promise && this._passwordHashPromiseKey === hashKey) {
+                if (generation === this._reconnectGeneration &&
+                    this._passwordHashPromise === promise && this._passwordHashPromiseKey === hashKey) {
                     this._passwordHash = hash;
                     this._passwordHashKey = hashKey;
                 }
@@ -6406,12 +6529,15 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          * @param {Object} msg - Listing message
          */
         async _handleListing(msg) {
+            const generation = this._reconnectGeneration;
             this._log('Processing listing');
 
             await this._ensurePasswordHash();
+            if (generation !== this._reconnectGeneration || this._intentionalDisconnect) return;
 
             // Emit internal event for room joined
             this._emit('_roomJoined');
+            if (generation !== this._reconnectGeneration || this._intentionalDisconnect) return;
 
             // Emit listing event for compatibility with Gemini example
             if (msg.list && Array.isArray(msg.list)) {
@@ -6665,11 +6791,11 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             // Create connection for the viewer
             const connection = await this._createConnection(msg.UUID, 'publisher');
             if (this._pendingLabel && typeof this._pendingLabel === 'string') {
-                connection.info = connection.info || {};
-                connection.info.label = this._sanitizeLabel(this._pendingLabel);
+                connection.localInfo = connection.localInfo || {};
+                connection.localInfo.label = this._sanitizeLabel(this._pendingLabel);
             }
             if (this._pendingInfo && typeof this._pendingInfo === 'object') {
-                connection.info = Object.assign(connection.info || {}, this._pendingInfo);
+                connection.localInfo = Object.assign(connection.localInfo || {}, this._pendingInfo);
             }
             connection.streamID = this.state.streamID;
             
@@ -6707,7 +6833,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         this._log('Encrypted offer SDP');
                     } catch (error) {
                         this._log('Failed to encrypt offer:', error);
-                        offerMsg.description = offer;
+                        throw error;
                     }
                 } else {
                     offerMsg.description = offer;
@@ -7310,7 +7436,10 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
             // For stream IDs, we need to generate a hash from password + salt
             // and append it to the streamID (no underscore)
             if (!this._passwordHash) {
-                this._passwordHash = await this._generateHash(password + this.salt, 6);
+                const generation = this._reconnectGeneration;
+                const hash = await this._generateHash(password + this.salt, 6);
+                if (generation === this._reconnectGeneration) this._passwordHash = hash;
+                return streamID + hash;
             }
             return streamID + this._passwordHash;
         }
@@ -7707,7 +7836,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                                 offerMsg.vector = vector;
                             } catch (error) {
                                 this._log('Failed to encrypt offer:', error);
-                                offerMsg.description = offer;
+                                throw error;
                             }
                         } else {
                             offerMsg.description = offer;
@@ -7779,7 +7908,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                                     offerMsg.vector = vector;
                                 } catch (error) {
                                     this._log('Failed to encrypt offer:', error);
-                                    offerMsg.description = offer;
+                                    throw error;
                                 }
                             } else {
                                 offerMsg.description = offer;
@@ -7931,15 +8060,16 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
         async getStats(uuid = null) {
             const stats = {};
 
-            const connections = uuid ? 
-                [this.connections.get(uuid)].filter(Boolean) : 
-                Array.from(this.connections.values());
-
-            for (const connection of connections) {
-                if (connection && connection.pc) {
+            const peers = uuid ? [[uuid, this.connections.get(uuid)]] : this.connections.entries();
+            for (const [peerUUID, connections] of peers) {
+                if (!connections) continue;
+                for (const type of ['publisher', 'viewer']) {
+                    const connection = connections[type];
+                    if (!connection || !connection.pc) continue;
                     try {
                         const pcStats = await connection.pc.getStats();
-                        stats[connection.uuid] = Array.from(pcStats.values());
+                        if (!stats[peerUUID]) stats[peerUUID] = [];
+                        stats[peerUUID].push(...Array.from(pcStats.values(), entry => ({ ...entry, connectionType: type })));
                     } catch (error) {
                         this._log('Error getting stats:', error);
                     }
@@ -8458,13 +8588,14 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
 
                 // Store pending request
                 if (!this._pendingRequests) {
-                    this._pendingRequests = {};
+                    this._pendingRequests = Object.create(null);
                 }
                 
                 this._pendingRequests[requestId] = {
                     resolve: resolve,
                     reject: reject,
-                    timeoutId: timeoutId
+                    timeoutId: timeoutId,
+                    targetUUID: targetUUID
                 };
 
                 // Send request
@@ -8506,7 +8637,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
          */
         onRequest(requestType, handler) {
             if (!this._requestHandlers) {
-                this._requestHandlers = {};
+                this._requestHandlers = Object.create(null);
             }
             this._requestHandlers[requestType] = handler;
         }
@@ -8572,11 +8703,11 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
 
             // Handle requests
             if (data.type === 'request') {
-                if (this._requestHandlers && this._requestHandlers[data.requestType]) {
+                if (this._requestHandlers && Object.prototype.hasOwnProperty.call(this._requestHandlers, data.requestType)) {
                     const handler = this._requestHandlers[data.requestType];
                     
                     // Execute handler (may be async)
-                    Promise.resolve(handler(data.data, uuid))
+                    Promise.resolve().then(() => handler(data.data, uuid))
                         .then(responseData => {
                             // Send response
                             this.respond(data.requestId, responseData, uuid);
@@ -8584,7 +8715,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         .catch(error => {
                             // Send error response
                             this.respond(data.requestId, {
-                                error: error.message || 'Request handler error'
+                                error: (error && error.message) || 'Request handler error'
                             }, uuid);
                         });
                 }
@@ -8593,8 +8724,9 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
 
             // Handle responses
             if (data.type === 'response') {
-                if (this._pendingRequests && this._pendingRequests[data.requestId]) {
+                if (this._pendingRequests && Object.prototype.hasOwnProperty.call(this._pendingRequests, data.requestId)) {
                     const pending = this._pendingRequests[data.requestId];
+                    if (pending.targetUUID && pending.targetUUID !== uuid) return;
                     clearTimeout(pending.timeoutId);
                     
                     if (data.data && data.data.error) {
@@ -8737,7 +8869,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
                         offerMsg.vector = vector;
                     } catch (error) {
                         this._log('Failed to encrypt ICE restart offer:', error);
-                        offerMsg.description = offer;
+                        throw error;
                     }
                 } else {
                     offerMsg.description = offer;
@@ -8891,7 +9023,7 @@ const VDON_RESOURCE_CHUNK_SIZE = 16384;
 
                 // User-provided filter
                 if (typeof userFilter === 'function') {
-                    try { if (!userFilter(norm)) return false; } catch (e) { /* ignore */ }
+                    try { if (!userFilter(norm)) return false; } catch (e) { return false; }
                 } else if (userFilter instanceof RegExp) {
                     if (!userFilter.test(norm.streamID)) return false;
                 } else if (typeof userFilter === 'string') {

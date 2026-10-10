@@ -59,6 +59,11 @@ Use **Active Streams** to copy links or stop publishing, including streams start
 in another tab. Choose **+ Mic** to mix in your local microphone; the browser may
 ask for permission. Use **Refresh videos** after the page adds or replaces videos.
 
+On Discord, published videos keep their viewer links across tile reordering and
+layout changes when the source can be identified. A temporarily missing camera
+keeps its publisher available for reconnection; use **Stop Publishing** when done.
+If two sources cannot be distinguished, select the returning video and publish it again.
+
 After updating an unpacked extension, click **Reload** in `chrome://extensions/`
 and reload the source pages before starting new captures.
 
@@ -88,13 +93,13 @@ cd video_capture_extension
 
 ## Development
 
-The bundled VDO.Ninja SDK is the official `@vdoninja/sdk@1.6.0` browser build
-from https://www.npmjs.com/package/@vdoninja/sdk/v/1.6.0 (MPL-2.0; see
+The bundled VDO.Ninja SDK is the official `@vdoninja/sdk@1.6.2` browser build
+from https://www.npmjs.com/package/@vdoninja/sdk/v/1.6.2 (MPL-2.0; see
 `LICENSE-SDK`). `combined-vdo-scripts.js` contains the same SDK followed by
 the extension publisher code. Update both SDK copies together, preserving
 everything from `// Setting up VDO publisher functions...` onward.
 
-Run regression checks with `node --test tests/*.test.cjs`.
+Run regression checks with `node --test --test-concurrency=2 tests/*.test.cjs`.
 The release version shell check is `python tests/release-workflow.py` (requires
 PyYAML and Bash).
 Run extension runtime checks with `node tests/extension-runtime.cjs` and an
@@ -116,7 +121,7 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 ## License
 
 The extension code is licensed under the [MIT License](LICENSE). The bundled
-VDO.Ninja SDK 1.6.0 is licensed under [MPL-2.0](LICENSE-SDK).
+VDO.Ninja SDK 1.6.2 is licensed under [MPL-2.0](LICENSE-SDK).
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes. Pushing code to `main` runs
 the existing automatic patch-version bump and GitHub release workflow; Chrome

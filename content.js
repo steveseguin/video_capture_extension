@@ -3,6 +3,143 @@ let capturedStreams = new Map();
 let videoObserver = null;
 let isInitialized = false;
 
+// Discord rebuilds call tiles when switching layouts. Keep source identities for
+// this page's lifetime, independent of element order and generated CSS classes.
+const discordSources = new Map();
+const discordVideoIds = new WeakMap();
+
+function isDiscordVideoPage() {
+    return typeof window !== 'undefined' && window.location &&
+        /(^|\.)discord(?:app)?\.com$/.test(window.location.hostname);
+}
+
+function discordVideoIdentity(video) {
+    const media = [];
+    if (video.srcObject instanceof MediaStream) {
+        for (const track of video.srcObject.getVideoTracks()) {
+            if (track.id) media.push('track:' + track.id);
+        }
+        if (video.srcObject.id) media.push('stream:' + video.srcObject.id);
+    }
+    let tile = null;
+    let label = '';
+    // Labels may be on a sibling overlay. Never walk into a different tile.
+    for (let node = video; node && node !== document.body; node = node.parentElement) {
+        if (node.querySelectorAll('video').length > 1) break;
+        const labelled = [node, ...node.querySelectorAll('[aria-label]')].find(element =>
+            /^Call tile,\s*\S/i.test(element.getAttribute('aria-label') || ''));
+        if (labelled) {
+            tile = node;
+            label = labelled.getAttribute('aria-label').trim();
+            break;
+        }
+    }
+    let owner = '';
+    if (tile) {
+        const user = tile.closest('[data-user-id]') || tile.querySelector('[data-user-id]');
+        if (user) owner = user.getAttribute('data-user-id') || '';
+        if (!owner) {
+            for (const image of tile.querySelectorAll('img[src]')) {
+                try {
+                    const url = new URL(image.src);
+                    const match = url.pathname.match(/^\/avatars\/(\d+)\//);
+                    if (/(^|\.)discordapp\.(com|net)$/.test(url.hostname) && match) {
+                        owner = match[1];
+                        break;
+                    }
+                } catch (e) {}
+            }
+        }
+    }
+    // Keep a participant's camera separate from their shared screen.
+    const role = label ? (/,\s*stream(?:,|$)/i.test(label) ? 'screen' : 'camera') : '';
+    const scope = window.location.pathname;
+    return { media, owner: owner ? scope + ':' + owner + ':' + role : '',
+        tile: label ? scope + ':' + label : '', role, scope };
+}
+
+function discordIdentitiesConflict(left, right) {
+    return left.scope !== right.scope || !!(left.role && right.role && left.role !== right.role) ||
+        !!(left.owner && right.owner && left.owner !== right.owner);
+}
+
+function updateDiscordVideoIds(videos) {
+    const items = Array.from(videos, video => ({ video, identity: discordVideoIdentity(video) }));
+    const assigned = new Set();
+    // Preserve known elements first so a newly inserted tile cannot steal an ID.
+    for (const item of items) {
+        const id = discordVideoIds.get(item.video);
+        const record = discordSources.get(id);
+        if (record && (!record.video || record.video === item.video) && !assigned.has(record) &&
+            !discordIdentitiesConflict(record.identity, item.identity) &&
+            !(!record.identity.tile && !record.identity.owner && record.identity.media.length &&
+              item.identity.media.length && !record.identity.media.some(key => item.identity.media.includes(key))) &&
+            !(record.identity.tile && item.identity.tile && record.identity.tile !== item.identity.tile &&
+              !record.identity.owner && !record.identity.media.some(key => item.identity.media.includes(key)))) {
+            item.record = record;
+            assigned.add(record);
+        }
+    }
+    for (const item of items) {
+        if (item.record) continue;
+        // Only reuse an unambiguous source. Track labels and tile positions are
+        // not identities; two people can have the same camera or display name.
+        for (const kind of ['media', 'owner', 'tile']) {
+            const keys = kind === 'media' ? item.identity.media : [item.identity[kind]].filter(Boolean);
+            const matches = new Set();
+            for (const key of keys) {
+                const hasKey = identity => kind === 'media' ? identity.media.includes(key) : identity[kind] === key;
+                // Fullscreen transitions can briefly show two elements for the
+                // same receive track or participant. Only names must be unique.
+                if (kind === 'tile' && items.filter(other => hasKey(other.identity)).length !== 1) continue;
+                const records = [...discordSources.values()].filter(record =>
+                    hasKey(record.identity) && !discordIdentitiesConflict(record.identity, item.identity));
+                if (records.length === 1 && (kind !== 'tile' || !assigned.has(records[0]))) matches.add(records[0]);
+            }
+            if (matches.size === 1) {
+                item.record = [...matches][0];
+                assigned.add(item.record);
+                break;
+            }
+            if (matches.size > 1) break;
+        }
+        if (!item.record) {
+            const id = 'video-' + crypto.randomUUID();
+            item.record = { id, identity: item.identity, video: item.video };
+            discordSources.set(id, item.record);
+            assigned.add(item.record);
+        }
+    }
+    for (const { video, identity, record } of items) {
+        // Rendering transitions may temporarily omit the tile overlay/avatar.
+        if (!identity.owner) identity.owner = record.identity.owner;
+        if (!identity.tile) identity.tile = record.identity.tile;
+        if (!identity.role) identity.role = record.identity.role;
+        record.identity = identity;
+        record.video = video;
+        discordVideoIds.set(video, record.id);
+        if (video.dataset.vdoCaptureId !== record.id) video.dataset.vdoCaptureId = record.id;
+    }
+    for (const record of discordSources.values()) {
+        if (!assigned.has(record)) record.video = null;
+    }
+    // Bound retained detached tiles while keeping every active publisher.
+    if (discordSources.size > 256) {
+        const active = new Set(Object.values(window.vdoPublishers || {}).map(record => record.videoId));
+        for (const [id, record] of discordSources) {
+            if (!assigned.has(record) && !active.has(id)) discordSources.delete(id);
+            if (discordSources.size <= 256) break;
+        }
+    }
+}
+
+function findDiscordVideo(videoId) {
+    updateDiscordVideoIds(document.querySelectorAll('video'));
+    const record = discordSources.get(videoId);
+    if (!record || !record.video || !record.video.isConnected || record.video.dataset.vdoCaptureId !== videoId) return null;
+    return record.video;
+}
+
 // Only initialize when extension is actually used
 function initialize() {
     if (isInitialized) return;
@@ -12,9 +149,12 @@ function initialize() {
 
 function detectVideos() {
     const videos = document.querySelectorAll('video');
+    const discord = isDiscordVideoPage();
+    if (discord) updateDiscordVideoIds(videos);
     const videoData = [];
     
     videos.forEach((video, index) => {
+        if (discord && discordSources.get(video.dataset.vdoCaptureId)?.video !== video) return;
         const rect = video.getBoundingClientRect();
         const hasSrc = !!(video.currentSrc || video.src || video.srcObject);
         const isRenderable = video.readyState >= 2 || hasSrc || (rect.width > 0 && rect.height > 0);
@@ -136,7 +276,7 @@ function getVideoTitle(video) {
 }
 
 async function captureVideo(videoId) {
-    const video = document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
+    const video = isDiscordVideoPage() ? findDiscordVideo(videoId) : document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
     if (!video) return null;
     const existing = capturedStreams.get(videoId);
     if (existing) {
@@ -227,7 +367,7 @@ async function captureVideo(videoId) {
 }
 
 async function captureScreenshot(videoId) {
-    const video = document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
+    const video = isDiscordVideoPage() ? findDiscordVideo(videoId) : document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
     if (!video) return null;
     
     try {

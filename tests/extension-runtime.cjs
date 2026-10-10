@@ -20,7 +20,8 @@ const http = require('node:http');
         context = await chromium.launchPersistentContext(profile, {
             channel: 'chromium', headless: true,
             ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
-            args: [`--disable-extensions-except=${root}`, `--load-extension=${root}`]
+            args: [`--disable-extensions-except=${root}`, `--load-extension=${root}`,
+                '--renderer-process-limit=2', '--num-raster-threads=2']
         });
         let worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
         const extensionId = new URL(worker.url()).host;
@@ -268,7 +269,7 @@ const http = require('node:http');
                     const handler = event => {
                         if (event.detail?.error !== 'Publish request cancelled') return;
                         window.removeEventListener('vdo-publish-response', handler);
-                        resolve(!window.vdoPublishers?.['late-runtime']);
+                        resolve(!window.vdoPublishers?.['late_runtime']);
                     };
                     window.addEventListener('vdo-publish-response', handler);
                 });
@@ -279,6 +280,15 @@ const http = require('node:http');
         }), { tabId: frames.tabId, frameId: frame.frameId, videoId: frame.result.videos[0].id });
         assert.equal(timedOut.success, false);
         assert.match(timedOut.error, /timed out/);
+        await worker.evaluate(async ({ tabId, frameId }) => {
+            await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: () => {
+                VDONinjaSDK.prototype.connect = async function() {};
+            } });
+        }, { tabId: frames.tabId, frameId: frame.frameId });
+        const retried = await popup.evaluate(({ tabId, frameId, videoId }) => chrome.runtime.sendMessage({
+            type: 'startStream', tabId, frameId, videoId, title: 'Retry publish', settings: { streamId: 'retry_runtime' }
+        }), { tabId: frames.tabId, frameId: frame.frameId, videoId: frame.result.videos[0].id });
+        assert.equal(retried.success, true, retried.error);
         const lateCleaned = await worker.evaluate(async ({ tabId, frameId }) => {
             const [result] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: async () => {
                 window.finishLateConnection();
@@ -287,7 +297,11 @@ const http = require('node:http');
             return result.result;
         }, { tabId: frames.tabId, frameId: frame.frameId });
         assert.equal(lateCleaned, true);
-        console.log('PASS: reused stream IDs are rejected and publishing after the real timeout cleans up its publisher');
+        const afterLateCleanup = await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'getActiveStreams' }));
+        assert.ok(afterLateCleanup.some(stream => stream.streamId === 'retry_runtime'), 'Late cleanup must preserve retry controls');
+        const retryStopped = await popup.evaluate(videoId => chrome.runtime.sendMessage({ type: 'stopStream', videoId }), frame.result.videos[0].id);
+        assert.equal(retryStopped.success, true, retryStopped.error);
+        console.log('PASS: late publishing cleanup preserves a successful retry and its Stop control');
 
         await worker.evaluate(async ({ tabId, frameId }) => {
             await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: () => {
@@ -319,6 +333,8 @@ const http = require('node:http');
             activePublishers.set('runtime-video', { tabId, frameId, streamId: 'runtime-stream', server: 'vdo.ninja' });
             activeTabs.set(999, { streamId: 'runtime-tab', server: 'vdo.ninja' });
             await savePublisherState();
+            await Promise.all([ensureOffscreenDocument(), ensureOffscreenDocument()]);
+            await ensureOffscreenDocument();
         }, { tabId: frames.tabId, frameId: frame.frameId });
         const cdp = await context.newCDPSession(popup);
         let versions = [];
@@ -336,9 +352,9 @@ const http = require('node:http');
         assert.ok(streams.some(stream => stream.id === 'tab-999'));
         console.log('PASS: active video and tab controls survive actual worker termination');
 
-        worker = context.serviceWorkers().find(w => w.url().includes(extensionId)) || await context.waitForEvent('serviceworker');
         // Return a synthetic frame from the real iframe bridge to verify routing.
-        await worker.evaluate(async ({ tabId, frameId }) => {
+        // Use the popup's live extension context after terminating the worker.
+        await popup.evaluate(async ({ tabId, frameId }) => {
             await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: () => {
                 window.getVDOPublisherThumbnail = async () => ({ success: true, dataUrl: 'iframe-thumbnail' });
             } });
@@ -349,10 +365,6 @@ const http = require('node:http');
         assert.equal(thumbnail.dataUrl, 'iframe-thumbnail');
         console.log('PASS: thumbnail requests reach the owning iframe');
 
-        await worker.evaluate(async () => {
-            await Promise.all([ensureOffscreenDocument(), ensureOffscreenDocument()]);
-            await ensureOffscreenDocument();
-        });
         const browserCdp = await context.browser().newBrowserCDPSession();
         const { targetInfos } = await browserCdp.send('Target.getTargets');
         const offscreenTarget = targetInfos.find(target => target.url === `chrome-extension://${extensionId}/offscreen.html`);
@@ -398,7 +410,7 @@ const http = require('node:http');
         await evaluateOffscreen('window.finishTestConnection(); true;');
         assert.equal((await popup.evaluate(() => window.pendingOffscreenStart)).success, false);
         assert.equal(await evaluateOffscreen('mediaStream === null && vdoPublisher === null && !captureStarting'), true);
-        await worker.evaluate(() => chrome.offscreen.closeDocument());
+        await popup.evaluate(() => chrome.offscreen.closeDocument());
         console.log('PASS: actual offscreen document cancels pending startup and stops its real media tracks');
         await popup.setViewportSize({ width: 420, height: 720 });
         await popup.evaluate(() => {
