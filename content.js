@@ -67,6 +67,8 @@ function updateDiscordVideoIds(videos) {
     const items = Array.from(videos, video => ({ video, identity: discordVideoIdentity(video) }));
     const assigned = new Set();
     // Preserve known elements first so a newly inserted tile cannot steal an ID.
+    // A changed label needs current owner/media evidence; a remembered owner
+    // alone cannot identify a video node recycled for another participant.
     for (const item of items) {
         const id = discordVideoIds.get(item.video);
         const record = discordSources.get(id);
@@ -75,7 +77,8 @@ function updateDiscordVideoIds(videos) {
             !(!record.identity.tile && !record.identity.owner && record.identity.media.length &&
               item.identity.media.length && !record.identity.media.some(key => item.identity.media.includes(key))) &&
             !(record.identity.tile && item.identity.tile && record.identity.tile !== item.identity.tile &&
-              !record.identity.owner && !record.identity.media.some(key => item.identity.media.includes(key)))) {
+              !(record.identity.owner && record.identity.owner === item.identity.owner) &&
+              !record.identity.media.some(key => item.identity.media.includes(key)))) {
             item.record = record;
             assigned.add(record);
         }
