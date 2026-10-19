@@ -4,157 +4,31 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Privacy Policy - VDO.Ninja Video Capture Extension</title>
-    <style>
-        :root {
-            --primary: #69aadc;
-            --primary-dark: #3a80c6;
-            --bg-dark: #1e1f22;
-            --bg-darker: #121212;
-            --surface: #2e3035;
-            --text: #e8eaed;
-            --text-secondary: #b9bbbe;
-        }
-        
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            line-height: 1.8;
-            color: var(--text);
-            background: var(--bg-darker);
-        }
-        
-        .header {
-            background: var(--bg-dark);
-            padding: 20px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-        }
-        
-        .header h1 {
-            max-width: 1200px;
-            margin: 0 auto;
-            color: var(--primary);
-        }
-        
-        .container {
-            max-width: 900px;
-            margin: 40px auto;
-            padding: 0 20px;
-        }
-        
-        .back-link {
-            display: inline-block;
-            color: var(--primary);
-            text-decoration: none;
-            margin-bottom: 30px;
-            transition: all 0.3s;
-        }
-        
-        .back-link:hover {
-            transform: translateX(-5px);
-        }
-        
-        .content {
-            background: var(--bg-dark);
-            border-radius: 12px;
-            padding: 40px;
-            border: 1px solid rgba(255,255,255,0.05);
-        }
-        
-        h2 {
-            color: var(--primary);
-            margin: 30px 0 15px;
-            font-size: 1.5em;
-        }
-        
-        h3 {
-            color: var(--text);
-            margin: 20px 0 10px;
-            font-size: 1.2em;
-        }
-        
-        p {
-            color: var(--text-secondary);
-            margin-bottom: 15px;
-        }
-        
-        ul {
-            margin: 15px 0 15px 30px;
-            color: var(--text-secondary);
-        }
-        
-        li {
-            margin-bottom: 8px;
-        }
-        
-        .highlight {
-            background: rgba(106, 170, 220, 0.1);
-            border-left: 3px solid var(--primary);
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 4px;
-        }
-        
-        .highlight h3 {
-            color: var(--primary);
-            margin-top: 0;
-        }
-        
-        .date {
-            color: var(--text-secondary);
-            font-style: italic;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid rgba(255,255,255,0.1);
-        }
-        
-        .warning {
-            background: rgba(255, 100, 100, 0.1);
-            border-left: 3px solid #ff6464;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 4px;
-        }
-        
-        .warning h3 {
-            color: #ff6464;
-            margin-top: 0;
-        }
-        
-        footer {
-            text-align: center;
-            padding: 40px 20px;
-            color: var(--text-secondary);
-            border-top: 1px solid rgba(255,255,255,0.1);
-            margin-top: 60px;
-        }
-        
-        footer a {
-            color: var(--primary);
-            text-decoration: none;
-        }
-        
-        strong {
-            color: var(--text);
-        }
-        
-        a {
-            color: var(--primary);
-        }
-    </style>
+    <meta name="theme-color" content="#111214">
+    <link rel="icon" href="icon.png">
+    <link rel="stylesheet" href="site.css">
 </head>
 <body>
-    <div class="header">
-        <h1>🔐 Privacy Policy</h1>
+    <header class="nav">
+        <div class="wrap">
+            <a class="brand" href="index.html"><img src="icon.png" alt=""><span>VDO.Ninja Capture</span></a>
+            <ul class="nav-links">
+                <li><a href="installation.html">Install</a></li>
+                <li><a href="privacy.html" aria-current="page">Privacy</a></li>
+                <li><a href="terms.html">Terms</a></li>
+                <li><a href="https://github.com/steveseguin/video_capture_extension" target="_blank">GitHub</a></li>
+            </ul>
+        </div>
+    </header>
+
+    <div class="page-head">
+        <div class="wrap">
+            <h1>Privacy Policy</h1>
+            <p>How the extension handles your data, and what it does not collect.</p>
+        </div>
     </div>
-    
-    <div class="container">
-        <a href="index.html" class="back-link">← Back to Home</a>
-        
+
+    <main class="doc">
         <div class="content">
             <p><strong>Effective Date:</strong> August 2025</p>
             
@@ -294,16 +168,19 @@
             
             <p class="date">Last updated: August 2025</p>
         </div>
-    </div>
+    </main>
     
-    <footer>
-        <p>
-            <a href="index.html">Home</a> • 
-            <a href="installation.html">Installation</a> • 
-            <a href="terms.html">Terms</a> • 
-            <a href="https://github.com/steveseguin/video_capture_extension" target="_blank">GitHub</a> • 
-            <a href="https://vdo.ninja" target="_blank">VDO.Ninja</a>
-        </p>
+    <footer class="footer">
+        <div class="wrap">
+            <span>VDO.Ninja Video Capture · MIT License</span>
+            <nav>
+                <a href="index.html">Home</a>
+                <a href="installation.html">Installation</a>
+                <a href="terms.html">Terms</a>
+                <a href="https://github.com/steveseguin/video_capture_extension" target="_blank">GitHub</a>
+                <a href="https://vdo.ninja" target="_blank">VDO.Ninja</a>
+            </nav>
+        </div>
     </footer>
 </body>
 </html>
