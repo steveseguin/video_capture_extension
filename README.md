@@ -64,6 +64,13 @@ layout changes when the source can be identified. A temporarily missing camera
 keeps its publisher available for reconnection; use **Stop Publishing** when done.
 If two sources cannot be distinguished, select the returning video and publish it again.
 
+Leave **Stream ID** blank to remember a Discord participant's generated link for
+future calls. Cameras and screen shares get separate links when Discord exposes
+the participant's user ID and source type. Click **Publish Video** again in each
+call and keep the same server, room, and password settings to reuse the link.
+Assignments are saved in this browser profile; clearing extension data removes
+them. An explicit Stream ID overrides the remembered assignment.
+
 After updating an unpacked extension, click **Reload** in `chrome://extensions/`
 and reload the source pages before starting new captures.
 
@@ -85,7 +92,7 @@ cd video_capture_extension
 
 ## Privacy
 
-- No personal data collection
+- Discord link assignments stored locally in your browser
 - No analytics or tracking
 - All video streaming is peer-to-peer
 - Settings stored locally only

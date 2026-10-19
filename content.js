@@ -60,6 +60,7 @@ function discordVideoIdentity(video) {
     const role = label ? (/,\s*stream(?:,|$)/i.test(label) ? 'screen' : 'camera') : '';
     const scope = window.location.pathname;
     return { media, owner: owner && role ? scope + ':' + owner + ':' + role : '',
+        userId: /^\d{17,20}$/.test(owner) ? owner : '',
         participant: owner ? scope + ':' + owner : '',
         tile: label ? scope + ':' + label : '', role, scope };
 }
@@ -171,6 +172,16 @@ function findDiscordVideo(videoId) {
     const record = discordSources.get(videoId);
     if (!record || !record.video || !record.video.isConnected || record.video.dataset.vdoCaptureId !== videoId) return null;
     return record.video;
+}
+
+function getDiscordPersistentSourceKey(videoId) {
+    if (!isDiscordVideoPage()) return '';
+    const video = findDiscordVideo(videoId);
+    if (!video) return '';
+    // Use current metadata, not a retained label from an earlier tile occupant.
+    const identity = discordVideoIdentity(video);
+    if (!identity.userId || !identity.role) return '';
+    return 'discordStream:' + identity.userId + ':' + identity.role;
 }
 
 // These call pages expose source IDs independent of their current tile layout.

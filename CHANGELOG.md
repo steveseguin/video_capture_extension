@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.11
+
+- Remember generated Discord camera and screen-share links across calls in the same browser profile when the participant can be identified.
+- Allow a remembered Discord link to restart after a page reload when its previous publisher is confirmed to have ended.
+
 ## 1.1.10
 
 - Keep identifiable VDO.Ninja, Google Meet, and Microsoft Teams videos associated with their existing capture IDs when tiles move or return.

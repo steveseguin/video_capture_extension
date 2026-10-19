@@ -1,6 +1,7 @@
 const activePublishers = new Map();
 const activeTabs = new Map();
 const pendingVideoStarts = new Map();
+const pendingDiscordSources = new Set();
 let pendingTabCapture = null;
 let offscreenCreation = null;
 
@@ -262,6 +263,7 @@ async function startVideoStream(request) {
 
 async function createVideoStream(request) {
     const { videoId, tabId, frameId, settings, title } = request;
+    let reservedDiscordSource = null;
     
     // Check if we already have this stream active
     if (activePublishers.has(videoId)) {
@@ -281,15 +283,56 @@ async function createVideoStream(request) {
         // Check if SDK already injected
         const [checkResult] = await chrome.scripting.executeScript({
             target: frameId ? { tabId: tabId, frameIds: [frameId] } : { tabId: tabId },
-            func: () => window.vdoFullyLoaded
+            func: videoId => ({
+                loaded: !!window.vdoFullyLoaded,
+                discordSourceKey: typeof getDiscordPersistentSourceKey === 'function' ?
+                    getDiscordPersistentSourceKey(videoId) : ''
+            }),
+            args: [videoId]
         });
         
-        if (!checkResult.result) {
+        if (!checkResult.result || checkResult.result.loaded === false) {
             // Inject the SDK loader
             console.warn('VDO not fully loaded after 5 seconds, proceeding anyway');
         }
         
-        const { streamId, roomId } = normalizePublisherIds(settings);
+        let { streamId, roomId } = normalizePublisherIds(settings);
+        const discordSourceKey = checkResult.result && checkResult.result.discordSourceKey;
+        if (!(typeof settings.streamId === 'string' && settings.streamId.trim()) &&
+            typeof discordSourceKey === 'string' && /^discordStream:\d{17,20}:(camera|screen)$/.test(discordSourceKey)) {
+            if (pendingDiscordSources.has(discordSourceKey)) {
+                throw new Error('This Discord source is already publishing. Stop its existing capture before starting another.');
+            }
+            pendingDiscordSources.add(discordSourceKey);
+            reservedDiscordSource = discordSourceKey;
+            for (const [existingId, publisher] of activePublishers) {
+                if (publisher.discordSourceKey !== discordSourceKey) continue;
+                // A page reload can lose its unload notification. Confirm that
+                // its publisher is gone before discarding the old bookkeeping.
+                let stillPublishing = true;
+                try {
+                    const [status] = await chrome.scripting.executeScript({
+                        target: publisher.frameId != null ?
+                            { tabId: publisher.tabId, frameIds: [publisher.frameId] } : { tabId: publisher.tabId },
+                        func: streamId => !!(window.vdoPublishers && window.vdoPublishers[streamId]),
+                        args: [publisher.streamId]
+                    });
+                    stillPublishing = !status || status.result !== false;
+                } catch (e) {}
+                if (stillPublishing) {
+                    throw new Error('This Discord source is already publishing. Stop its existing capture before starting another.');
+                }
+                if (activePublishers.get(existingId) === publisher) activePublishers.delete(existingId);
+            }
+            const saved = (await chrome.storage.local.get(discordSourceKey))[discordSourceKey];
+            if (typeof saved === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(saved)) {
+                streamId = saved;
+            } else {
+                // Random links stay local; the viewer URL never contains the Discord user ID.
+                streamId = 'stream_' + crypto.randomUUID().replace(/-/g, '');
+                await chrome.storage.local.set({ [discordSourceKey]: streamId });
+            }
+        }
         const server = settings.server || 'vdo.ninja';
         const requestId = crypto.randomUUID();
         
@@ -328,6 +371,7 @@ async function createVideoStream(request) {
         
         // Store the publisher info
         activePublishers.set(videoId, {
+            discordSourceKey: reservedDiscordSource,
             streamId: streamId,
             roomId: roomId,
             server: server,
@@ -348,6 +392,8 @@ async function createVideoStream(request) {
     } catch (error) {
         console.error('Error starting video stream:', error);
         return { success: false, error: error.message };
+    } finally {
+        if (reservedDiscordSource) pendingDiscordSources.delete(reservedDiscordSource);
     }
 }
 
