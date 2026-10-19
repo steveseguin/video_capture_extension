@@ -564,6 +564,18 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
     font-size: 14px;
 }
 
+.setting-hint {
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.setting-item .secondary-btn {
+    width: 100%;
+    margin-top: 8px;
+    font-size: 13px;
+}
+
 .setting-item input:focus,
 .setting-item select:focus {
     outline: none;

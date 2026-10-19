@@ -22,7 +22,7 @@ Run the extension's packaged capture functions in the selected tab and its frame
 
 Save quality and connection settings and active-stream information in the browser. Local storage retains preferences across popup closures; session storage retains publisher bookkeeping while the background worker is suspended. This information supports stream controls and viewer links.
 
-For identifiable Discord videos, local storage also associates the participant's numeric user ID and camera or screen-share type with a randomly generated stream ID, so viewer links can be reused across calls. The Discord user ID is not included in viewer links or sent to the signaling service by this feature.
+For identifiable Discord videos, local storage also associates the participant's numeric user ID and camera or screen-share type with a randomly generated stream ID, so viewer links can be reused across calls. The Discord user ID is not included in viewer links or sent to the signaling service by this feature. Users can remove these assignments with **Forget remembered Discord links** in Settings.
 
 ### tabs
 

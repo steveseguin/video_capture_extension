@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.12
+
+- Add a Settings button that forgets remembered Discord links, so old viewer links stop working for later captures.
+- Allow Start and Stop to recover when a capture's page was replaced by one the extension cannot access, such as a browser settings page.
+
 ## 1.1.11
 
 - Remember generated Discord camera and screen-share links across calls in the same browser profile when the participant can be identified.

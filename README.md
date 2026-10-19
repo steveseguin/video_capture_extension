@@ -70,6 +70,9 @@ the participant's user ID and source type. Click **Publish Video** again in each
 call and keep the same server, room, and password settings to reuse the link.
 Assignments are saved in this browser profile; clearing extension data removes
 them. An explicit Stream ID overrides the remembered assignment.
+Anyone who has a remembered link can watch later captures of that participant.
+Set a password, or click **Forget remembered Discord links** in Settings so the
+next capture gets a new link.
 
 After updating an unpacked extension, click **Reload** in `chrome://extensions/`
 and reload the source pages before starting new captures.

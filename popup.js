@@ -40,6 +40,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('captureTabBtn').onclick = () =>
         activeStreams.has(`tab-${currentTab.id}`) ? stopTabCapture() : captureTab();
     document.getElementById('vdoServer').addEventListener('change', handleServerChange);
+    document.getElementById('forgetDiscordLinks').addEventListener('click', forgetDiscordLinks);
 });
 
 async function syncWithBackground() {
@@ -580,6 +581,18 @@ function loadSettings() {
 function saveSettings() {
     const settings = getSettings();
     chrome.storage.local.set(settings);
+}
+
+async function forgetDiscordLinks() {
+    // Anyone holding an old viewer link could otherwise watch future captures.
+    // Running streams keep their links; the next capture gets a new one.
+    try {
+        const keys = Object.keys(await chrome.storage.local.get(null)).filter(key => key.startsWith('discordStream:'));
+        await chrome.storage.local.remove(keys);
+        showNotification(keys.length ? `Forgot ${keys.length} remembered Discord link${keys.length === 1 ? '' : 's'}` : 'No remembered Discord links');
+    } catch (error) {
+        showNotification(`Failed to forget Discord links: ${error.message}`, 'error');
+    }
 }
 
 function handleServerChange(e) {

@@ -30,52 +30,78 @@
 
     <main class="doc">
         <div class="content">
-            <p><strong>Effective Date:</strong> August 2025</p>
-            
-            <p>Welcome to the VDO.Ninja Video Capture Extension, a browser extension designed to facilitate video capture and streaming via the VDO.Ninja peer-to-peer networking service. This Privacy Policy outlines our practices regarding the collection, use, and protection of your information.</p>
-            
+            <p><strong>Effective Date:</strong> October 18, 2026</p>
+
+            <p>The VDO.Ninja Video Capture Extension (the "extension") is a browser extension for capturing video and streaming it through the VDO.Ninja peer-to-peer service. The extension is provided by Steve Seguin ("we", "us", or "our"). This Privacy Policy explains what information the extension handles, where that information goes, and the choices you have.</p>
+
             <div class="warning">
                 <h3>Use at Your Own Risk</h3>
                 <p>We strive to protect your privacy, but you use this extension and the VDO.Ninja service at your own risk. No guarantee of absolute privacy or security can be provided.</p>
             </div>
-            
-            <h2>1. Data Collection and Use</h2>
-            
-            <h3>IP Addresses and P2P Networking</h3>
+
+            <div class="highlight">
+                <h3>Summary</h3>
+                <ul>
+                    <li>We do not run analytics, usage tracking, or advertising in the extension, and we do not sell your information</li>
+                    <li>No account is required</li>
+                    <li>Page content the extension reads to find videos stays in your browser</li>
+                    <li>When you publish a stream, connection servers and your viewers receive the information needed to connect and deliver the stream, including your IP address</li>
+                </ul>
+            </div>
+
+            <h2>1. Information the Extension Handles</h2>
+
+            <h3>Page Content Read in Your Browser</h3>
             <ul>
-                <li>This extension facilitates peer-to-peer connections via VDO.Ninja, which may share your IP address and basic system information with remote guests you connect with</li>
+                <li>To find and capture videos, the extension reads content of web pages you use it on, including video elements, page and tab titles, and page addresses (URLs)</li>
+                <li>On supported call pages, such as Discord, Google Meet, Microsoft Teams, and VDO.Ninja, the extension reads participant and media identifiers shown in the page so each video keeps the same capture when the layout changes</li>
+                <li>This processing happens in your browser. The extension does not send page content, browsing history, or these identifiers to us</li>
+            </ul>
+
+            <h3>Information Stored in Your Browser</h3>
+            <ul>
+                <li>Settings such as room name, stream ID, password, server, and quality options are stored in your browser's extension storage</li>
+                <li>Information about active streams is kept in session storage so stream controls survive while the extension's background worker is suspended</li>
+                <li>For identifiable Discord videos, the participant's numeric Discord user ID and camera or screen-share type are saved locally with a random stream ID, so viewer links can be reused across calls. The Discord user ID is not included in those links or sent to the signaling service by this feature</li>
+                <li>No tracking cookies are used, and local storage is used for functionality only, not for tracking</li>
+            </ul>
+
+            <h3>Information Sent When You Publish</h3>
+            <ul>
+                <li>When you start a stream, the extension connects to the VDO.Ninja signaling (handshake) server you select and, when needed, to STUN and TURN servers. These servers receive your IP address and the stream ID, room, and connection details needed to connect viewers</li>
+                <li>Your viewers receive the captured video and audio and a stream label, which is the captured video's title or the tab title</li>
+                <li>Peer-to-peer connections may share your IP address and basic system information with viewers, including browser user agent, basic hardware specifications, and operating system details</li>
                 <li>Using VPNs, TURN servers, or enabling IP-leak protection will offer enhanced privacy, however doing so could be detrimental to performance</li>
-                <li>Basic debug and system statistical information may be transmitted between peers, including browser user agent, basic hardware specifications, IP address, and operating system details</li>
             </ul>
-            
-            <h3>Extension Local Storage</h3>
+
+            <h3>What We Don't Do</h3>
             <ul>
-                <li>The extension stores user preferences and settings locally in your browser storage</li>
-                <li>Stream IDs, room names, and configuration settings are cached locally</li>
-                <li>For identifiable Discord videos, the participant's numeric user ID and camera or screen-share type are saved locally with a random stream ID to reuse viewer links across calls. The Discord user ID is not included in those links or sent to the signaling service by this feature.</li>
-                <li>No tracking cookies are used</li>
-                <li>Local storage is used for functionality only, not for tracking purposes</li>
-            </ul>
-            
-            <h3>What We DON'T Collect</h3>
-            <ul>
-                <li>The extension itself does not collect or transmit personal information to external servers</li>
-                <li>No analytics or usage statistics are collected by the extension</li>
+                <li>We do not collect analytics or usage statistics through the extension</li>
+                <li>We do not sell information, use it for advertising, or transfer it to data brokers</li>
+                <li>We do not use information from the extension to determine creditworthiness or for lending purposes</li>
                 <li>No user accounts are created or required</li>
             </ul>
-            
-            <h2>2. Data Deletion Policy</h2>
-            
-            <h3>Browser Extension</h3>
+
+            <h3>Chrome Web Store Limited Use</h3>
+            <p>The extension's use of information it accesses complies with the Chrome Web Store User Data Policy, including its <a href="https://developer.chrome.com/docs/webstore/program-policies/limited-use" target="_blank">Limited Use requirements</a>. That information is used only to provide the extension's single purpose: capturing the video or tab you choose and streaming it to the viewers you choose.</p>
+
+            <h2>2. Other People's Information</h2>
             <ul>
-                <li>All local preference data can be cleared by removing the extension</li>
-                <li>Stream IDs, room names, and user settings stored locally can be manually cleared through browser settings</li>
-                <li>All local data is automatically deleted when the extension is uninstalled</li>
-                <li>No server-side data retention occurs from the extension itself</li>
+                <li>Pages and calls you capture can include other people's video, voice, names, or account identifiers</li>
+                <li>You are responsible for obtaining any consent required by law and by the platform you capture from before capturing, streaming, or recording other people</li>
+                <li>We do not review, monitor, or control what you capture or stream</li>
             </ul>
-            
-            <h2>3. Data Security and Responsibility</h2>
-            
+
+            <h2>3. Data Retention and Deletion</h2>
+            <ul>
+                <li>Remembered Discord links can be removed with <strong>Forget remembered Discord links</strong> in the extension's Settings</li>
+                <li>Stream IDs, room names, and other settings stored locally can be cleared through your browser's extension data settings</li>
+                <li>All local data is deleted when the extension is uninstalled</li>
+                <li>The extension itself keeps no data on our servers. Connection services may keep limited technical data as described in the VDO.Ninja Privacy Policy</li>
+            </ul>
+
+            <h2>4. Data Security and Responsibility</h2>
+
             <h3>Media Data</h3>
             <ul>
                 <li>Media data transferred via WebRTC is encrypted per the WebRTC standard</li>
@@ -83,16 +109,17 @@
                 <li>Any viewer of a stream can record the stream without notice to others</li>
                 <li>External recording tools like OBS Studio can be used to record streams</li>
             </ul>
-            
+
             <h3>Stream IDs and Security</h3>
             <ul>
-                <li><strong>Treat Stream IDs and Room Names as sensitive information</strong></li>
-                <li>Choose secure values that cannot be easily guessed</li>
+                <li><strong>Treat Stream IDs, Room Names, and viewer links as sensitive information</strong></li>
+                <li>Anyone with a viewer link can potentially view that stream. A remembered Discord link keeps working for later captures of the same participant until you forget it</li>
+                <li>Choose secure values that cannot be easily guessed, and use a password when needed</li>
                 <li>The system may choose to fail-safe rather than fail-secure in some cases</li>
             </ul>
-            
-            <h2>4. Third-Party Services</h2>
-            
+
+            <h2>5. Third-Party Services</h2>
+
             <h3>VDO.Ninja Service</h3>
             <p>This extension relies on the VDO.Ninja service for WebRTC functionality. When using VDO.Ninja:</p>
             <ul>
@@ -100,73 +127,67 @@
                 <li>Handshake servers manage initial connections but subsequent data transfers are peer-to-peer when possible</li>
                 <li>While connected to the handshake server, new peer connections can potentially be established</li>
             </ul>
-            
+
             <h3>Infrastructure Services</h3>
             <ul>
-                <li><strong>Cloudflare:</strong> Used for STUN/TURN geo-routing and security services (GDPR-compliant)</li>
+                <li><strong>Cloudflare:</strong> Used for STUN/TURN geo-routing and security services</li>
                 <li><strong>Google:</strong> STUN services and cloud infrastructure may be used</li>
                 <li>TURN relay servers may retain connection data temporarily for technical functioning</li>
+                <li>Third-party services and websites, including the sites you capture from, have their own privacy policies, which we do not control</li>
             </ul>
-            
-            <h2>5. Browser Permissions</h2>
-            
+
+            <h2>6. Browser Permissions</h2>
+
             <h3>Required Permissions Explained</h3>
             <ul>
-                <li><strong>Host permissions (all URLs):</strong> Required to detect and capture video elements on any webpage</li>
-                <li><strong>ActiveTab:</strong> To interact with the current browser tab when capturing</li>
-                <li><strong>Storage:</strong> To save preferences and stream settings locally</li>
-                <li><strong>Scripting:</strong> To inject capture functionality into web pages</li>
-                <li><strong>Tabs:</strong> To capture entire browser tabs when requested</li>
+                <li><strong>Host permissions (all URLs):</strong> Detect and capture video elements on the websites you choose, including embedded frames</li>
+                <li><strong>activeTab:</strong> Interact with the tab where you open the extension</li>
+                <li><strong>scripting:</strong> Run the extension's packaged capture functions in the selected tab to detect videos, create thumbnails, and start or stop streams</li>
+                <li><strong>storage:</strong> Save settings, active-stream information, and remembered Discord links in your browser</li>
+                <li><strong>tabs:</strong> Identify source tabs and read their titles and URLs for stream selection and labels, and clean up when a tab closes</li>
+                <li><strong>tabCapture:</strong> Capture a whole tab's video and audio when you choose Tab Capture</li>
+                <li><strong>offscreen:</strong> Keep a tab capture streaming after the extension popup closes</li>
             </ul>
-            
-            <h2>6. User Responsibility</h2>
-            
-            <div class="highlight">
-                <h3>Important Security Considerations</h3>
-                <ul>
-                    <li>You are responsible for keeping your Stream IDs and Room Names secure</li>
-                    <li>Be aware that anyone with your Stream ID can potentially view your stream</li>
-                    <li>Consider who you share streaming links with</li>
-                    <li>Understand that P2P connections may reveal your IP address to viewers</li>
-                </ul>
-            </div>
-            
-            <h2>7. Open Source Transparency</h2>
-            
+
+            <h2>7. Children</h2>
+            <p>The extension is not directed to children under 13, or the minimum age required in your country. We do not knowingly collect personal information from children.</p>
+
+            <h2>8. Open Source Transparency</h2>
+
             <p>This extension is open source, allowing you to:</p>
             <ul>
                 <li>Review the complete source code on <a href="https://github.com/steveseguin/video_capture_extension" target="_blank">GitHub</a></li>
                 <li>Verify our privacy practices through code inspection</li>
                 <li>Contribute to improvements and security enhancements</li>
-                <li>Fork and self-host if desired (note: self-hosted versions still use VDO.Ninja services by default unless configured otherwise)</li>
+                <li>Fork and self-host if desired (note: self-hosted versions still use VDO.Ninja services by default unless configured otherwise). We are not responsible for modified versions distributed by others</li>
             </ul>
-            
-            <h2>8. Legal Disclaimer</h2>
-            
+
+            <h2>9. Legal Disclaimer</h2>
+
             <ul>
                 <li><strong>No Guarantee:</strong> While we strive to protect your information, we cannot guarantee absolute privacy or security</li>
                 <li><strong>Use at Your Own Risk:</strong> Use of this extension and the VDO.Ninja service is entirely at your own risk</li>
-                <li><strong>No Warranty:</strong> The extension is provided "as is" without warranty of any kind</li>
+                <li><strong>No Warranty:</strong> To the maximum extent permitted by law, the extension is provided "as is" and "as available" without warranty of any kind, as further described in our <a href="terms.html">Terms of Service</a></li>
             </ul>
-            
-            <h2>9. Contact Information</h2>
-            
+
+            <h2>10. Contact Information</h2>
+
             <p>For privacy-related inquiries:</p>
             <ul>
                 <li>Extension-specific issues: <a href="https://github.com/steveseguin/video_capture_extension/issues" target="_blank">GitHub Issues</a></li>
-                <li>VDO.Ninja service inquiries: <a href="mailto:steve@seguin.email">steve@seguin.email</a></li>
+                <li>Privacy questions and VDO.Ninja service inquiries: <a href="mailto:steve@seguin.email">steve@seguin.email</a></li>
             </ul>
-            
-            <h2>10. Amendments</h2>
-            
-            <p>This policy may be updated periodically. Changes will be reflected in the extension's version history on GitHub. We encourage users to review it regularly.</p>
-            
+
+            <h2>11. Amendments</h2>
+
+            <p>This policy may be updated periodically. The date on this page shows when it last changed, and changes are also reflected in the extension's version history on GitHub. We encourage users to review it regularly.</p>
+
             <div class="highlight">
                 <h3>Relationship to VDO.Ninja Privacy Policy</h3>
                 <p>This extension privacy policy supplements the main <a href="https://docs.vdo.ninja/help/privacy-and-security-details/vdo.ninja-privacy-policy" target="_blank">VDO.Ninja Privacy Policy</a>. When using the extension to stream via VDO.Ninja, both policies apply.</p>
             </div>
-            
-            <p class="date">Last updated: August 2025</p>
+
+            <p class="date">Last updated: October 18, 2026</p>
         </div>
     </main>
     

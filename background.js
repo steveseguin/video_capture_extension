@@ -37,6 +37,13 @@ function savePublisherState() {
 }
 const stateMutations = new Set(['startStream', 'stopStream', 'publisherEnded', 'tabCaptureEnded', 'captureTab', 'stopTabCapture']);
 
+// Target the document that owns a publisher when it is known. Injection into
+// that document fails only after it has been unloaded, taking its publisher.
+function publisherTarget(publisher) {
+    if (publisher.documentId) return { tabId: publisher.tabId, documentIds: [publisher.documentId] };
+    return publisher.frameId != null ? { tabId: publisher.tabId, frameIds: [publisher.frameId] } : { tabId: publisher.tabId };
+}
+
 function generateStreamId() {
     return 'stream_' + Math.random().toString(36).substr(2, 9);
 }
@@ -312,13 +319,14 @@ async function createVideoStream(request) {
                 let stillPublishing = true;
                 try {
                     const [status] = await chrome.scripting.executeScript({
-                        target: publisher.frameId != null ?
-                            { tabId: publisher.tabId, frameIds: [publisher.frameId] } : { tabId: publisher.tabId },
+                        target: publisherTarget(publisher),
                         func: streamId => !!(window.vdoPublishers && window.vdoPublishers[streamId]),
                         args: [publisher.streamId]
                     });
                     stillPublishing = !status || status.result !== false;
-                } catch (e) {}
+                } catch (e) {
+                    stillPublishing = !publisher.documentId;
+                }
                 if (stillPublishing) {
                     throw new Error('This Discord source is already publishing. Stop its existing capture before starting another.');
                 }
@@ -377,6 +385,7 @@ async function createVideoStream(request) {
             server: server,
             tabId: tabId,
             frameId: frameId || null,
+            documentId: result.documentId || null,
             title: title,
             qualitySettings: settings,
             timestamp: Date.now()
@@ -412,7 +421,7 @@ async function stopVideoStream(request) {
         if (tabId) {
             try {
                 const [result] = await chrome.scripting.executeScript({
-                    target: (publisher.frameId != null) ? { tabId: tabId, frameIds: [publisher.frameId] } : { tabId: tabId },
+                    target: publisherTarget(publisher),
                     func: async (streamId, requestId) => {
                         return new Promise((resolve) => {
                             const responseHandler = (event) => {
@@ -435,8 +444,12 @@ async function stopVideoStream(request) {
                     return { success: false, error: result?.result?.error || 'Failed to stop publisher' };
                 }
             } catch (e) {
-                // A closed tab cannot retain a publisher. Otherwise keep its
-                // controls available so a failed stop can be retried.
+                // A closed tab or unloaded document cannot retain a publisher.
+                // Otherwise keep its controls available so a failed stop can be retried.
+                if (publisher.documentId) {
+                    activePublishers.delete(videoId);
+                    return { success: true };
+                }
                 try {
                     await chrome.tabs.get(tabId);
                     return { success: false, error: e.message };
