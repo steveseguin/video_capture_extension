@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.1.10
+
+- Keep identifiable VDO.Ninja, Google Meet, and Microsoft Teams videos associated with their existing capture IDs when tiles move or return.
+- Capture Twitch's separate stream preview during detected ad breaks. When no stream video is available, suppress captured video and Twitch audio until the stream returns, while keeping the publisher connected.
+- Refresh Twitch capture streams when their underlying media reloads, and preserve the optional microphone mix during ad transitions.
+- Preserve Discord source identities while tile labels load and prefer live, visible copies during layout transitions.
+
+## 1.1.9
 
 - Update the bundled VDO.Ninja SDK to 1.6.2.
 - Keep Discord stream IDs and viewer links when identifiable video sources move or return after layout changes and camera interruptions.

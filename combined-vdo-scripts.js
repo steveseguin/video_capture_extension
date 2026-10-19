@@ -9277,6 +9277,154 @@ function setupPublisherFunctions() {
         return typeof input === 'object' ? JSON.stringify(input, null, 2).slice(0, 200) : String(input);
     };
 
+    function createTwitchCapture(selectedVideo) {
+        if (!/(^|\.)twitch\.tv$/.test(window.location.hostname)) return null;
+        const selectedPlayer = selectedVideo.closest('[data-a-target="video-player"], .picture-by-picture-player');
+        if (!selectedPlayer) return null;
+        const mainPlayers = document.querySelectorAll('[data-a-target="video-player"][data-a-player-type="site"]');
+        const player = (selectedPlayer.getAttribute('data-a-player-type') === 'picture-by-picture' || selectedPlayer.matches('.picture-by-picture-player'))
+            ? (mainPlayers.length === 1 ? mainPlayers[0] : null) : selectedPlayer;
+        if (!player) return null;
+        const path = window.location.pathname;
+        const adMarker = '[data-a-target="video-ad-label"], [data-a-target="video-ad-countdown"]';
+        const captures = new WeakMap();
+        const watched = new Set();
+        const owned = new Set();
+        const originals = {};
+        let sourceVideo = null;
+        let replace = null;
+        let replacing = false;
+        let stopped = false;
+
+        function resetCapture(event) {
+            captures.delete(event.currentTarget);
+            refresh();
+        }
+
+        function findVideo() {
+            if (!player.isConnected || window.location.pathname !== path) return null;
+            let container = player;
+            if (player.querySelector(adMarker)) {
+                // Twitch's stream preview has its own player during an ad break.
+                // IDs and DOM order do not distinguish stream video from ad video.
+                const mains = document.querySelectorAll('[data-a-target="video-player"][data-a-player-type="site"]');
+                if (mains.length !== 1 || mains[0] !== player) return null;
+                const previews = document.querySelectorAll('[data-a-target="video-player"][data-a-player-type="picture-by-picture"], .picture-by-picture-player');
+                if (previews.length !== 1 || previews[0].querySelector(adMarker)) return null;
+                container = previews[0];
+            } else {
+                const marker = document.querySelector(adMarker);
+                if (marker && !marker.closest('[data-a-target="video-player"]')) return null;
+            }
+            const videos = container.querySelectorAll('video');
+            return videos.length === 1 && videos[0].readyState >= 2 ? videos[0] : null;
+        }
+
+        function capture(video) {
+            if (!video) return null;
+            let stream = video.srcObject;
+            if (!(stream instanceof MediaStream)) {
+                let saved = captures.get(video);
+                const source = video.srcObject || video.currentSrc;
+                if (!saved || saved.source !== source) {
+                    saved = { source, stream: video.captureStream() };
+                    captures.set(video, saved);
+                }
+                stream = saved.stream;
+            }
+            if (!watched.has(video)) {
+                watched.add(video);
+                video.addEventListener('emptied', resetCapture);
+                video.addEventListener('loadedmetadata', resetCapture);
+            }
+            return stream;
+        }
+
+        sourceVideo = findVideo();
+        const initial = capture(sourceVideo || selectedVideo);
+        const output = new MediaStream();
+        initial.getTracks().forEach(original => {
+            const track = original.clone();
+            track.enabled = !!sourceVideo && original.enabled;
+            originals[track.kind] = original;
+            owned.add(track);
+            output.addTrack(track);
+        });
+
+        async function refresh() {
+            if (stopped) return;
+            let candidate = null;
+            let source = null;
+            try {
+                candidate = findVideo();
+                source = capture(candidate);
+            } catch (e) {}
+            // Disable owned clones synchronously, before any asynchronous replacement.
+            // Disabling source tracks would also mute/black out Twitch's own player.
+            owned.forEach(track => {
+                const original = originals[track.kind];
+                track.enabled = !!candidate && candidate === sourceVideo && !!source &&
+                    source.getTracks().includes(original) && original.readyState === 'live' && original.enabled;
+            });
+            if (!replace || replacing || !source || !candidate) return;
+            const changes = ['video', 'audio'].filter(kind => {
+                const original = source.getTracks().find(t => t.kind === kind && t.readyState === 'live');
+                return original && (candidate !== sourceVideo || original !== originals[kind]);
+            });
+            if (!changes.length) return;
+            replacing = true;
+            let restored = false;
+            try {
+                for (const kind of changes) {
+                    if (stopped) return;
+                    const original = source.getTracks().find(t => t.kind === kind && t.readyState === 'live');
+                    if (!original) continue;
+                    const current = output.getTracks().find(t => t.kind === kind);
+                    const replacement = original.clone();
+                    replacement.enabled = false;
+                    owned.add(replacement);
+                    try { await replace(kind, current, replacement); }
+                    catch (error) { replacement.stop(); owned.delete(replacement); throw error; }
+                    if (current) { output.removeTrack(current); current.stop(); owned.delete(current); }
+                    if (stopped) { replacement.stop(); return; }
+                    output.addTrack(replacement);
+                    originals[kind] = original;
+                }
+                sourceVideo = candidate;
+                restored = true;
+            } catch (error) {
+                debugLog('twitchRestore:failed', { error: error.message });
+            } finally {
+                replacing = false;
+            }
+            // Re-check the ad state after awaiting SDK operations.
+            if (!stopped && restored) refresh();
+        }
+        const observer = new MutationObserver(refresh);
+        observer.observe(document.documentElement, {
+            childList: true, subtree: true, attributes: true,
+            attributeFilter: ['data-a-target', 'data-a-player-type', 'src']
+        });
+        const timer = setInterval(refresh, 250);
+        refresh();
+        return {
+            stream: output,
+            bind(callback) { replace = callback; refresh(); },
+            stop() {
+                stopped = true;
+                observer.disconnect();
+                clearInterval(timer);
+                watched.forEach(video => {
+                    video.removeEventListener('emptied', resetCapture);
+                    video.removeEventListener('loadedmetadata', resetCapture);
+                });
+                watched.clear();
+                owned.forEach(track => track.stop());
+                owned.clear();
+            }
+        };
+    }
+
     // Create the publisher function
     window.publishVideoToVDO = async function(videoId, streamId, roomId, title, password, server, mic, qualitySettings = {}) {
         let vdo = null;
@@ -9285,8 +9433,9 @@ function setupPublisherFunctions() {
         let micStream = null;
         let audioContext = null;
         let canvasFrame = null;
-        let discordMonitor = null;
-        let discordOwnedStream = null;
+        let callMonitor = null;
+        let callOwnedStream = null;
+        let twitchCapture = null;
         const releaseMic = async () => {
             try { micStream?.getTracks().forEach(track => track.stop()); } catch (e) {}
             try { if (audioContext) await audioContext.close(); } catch (e) {}
@@ -9301,8 +9450,9 @@ function setupPublisherFunctions() {
             // console.log('Publishing:', { videoId, streamId, roomId, title });
             
             let video = document.querySelector(`[data-vdo-capture-id="${videoId}"]`);
-            const discordCapture = typeof isDiscordVideoPage === 'function' && isDiscordVideoPage();
-            if (discordCapture) video = findDiscordVideo(videoId);
+            const callCapture = typeof isDiscordVideoPage === 'function' &&
+                (isDiscordVideoPage() || (video && typeof callVideoSourceKey === 'function' && !!callVideoSourceKey(video)));
+            if (callCapture) video = findCallVideo(videoId);
             if (!video) {
                 throw new Error('Video element not found');
             }
@@ -9326,9 +9476,13 @@ function setupPublisherFunctions() {
             
             // Capture stream
             let streamOrigin = 'unknown';
-            if (discordCapture && video.srcObject instanceof MediaStream) {
+            twitchCapture = createTwitchCapture(video);
+            if (twitchCapture) {
+                stream = twitchCapture.stream;
+                streamOrigin = 'twitch-player';
+            } else if (callCapture && video.srcObject instanceof MediaStream) {
                 stream = video.srcObject;
-                streamOrigin = 'discord-srcobject';
+                streamOrigin = isDiscordVideoPage() ? 'discord-srcobject' : 'call-srcobject';
             } else if (typeof video.captureStream === 'function') {
                 stream = video.captureStream(30);
                 streamOrigin = 'element-capture';
@@ -9359,11 +9513,11 @@ function setupPublisherFunctions() {
             }
             // Keep a reference to the original captured media stream (video source)
             let baseVideoStream = stream;
-            if (discordCapture) {
+            if (callCapture) {
                 // Own clones: SDK replacement and shutdown stop their tracks.
-                // Never give those operations Discord's original receive tracks.
+                // Never give those operations the call page's original receive tracks.
                 stream = stream.clone();
-                discordOwnedStream = stream;
+                callOwnedStream = stream;
                 allowSourceTrackStop = true;
             }
             debugLog('baseVideoStream:initialized', {
@@ -9624,7 +9778,7 @@ function setupPublisherFunctions() {
                     // Add video audio if present
                     try {
                         if (stream && stream.getAudioTracks && stream.getAudioTracks().length > 0) {
-                            const videoSrc = ctx.createMediaStreamSource(discordCapture ? baseVideoStream : stream);
+                            const videoSrc = ctx.createMediaStreamSource(callCapture ? baseVideoStream : stream);
                             try { recInit.videoAudioSource = videoSrc; } catch (e) {}
                             videoSrc.connect(destination);
                         }
@@ -9780,8 +9934,9 @@ function setupPublisherFunctions() {
                     return;
                 }
                 cleaned = true;
-                if (discordMonitor !== null) clearInterval(discordMonitor);
-                if (discordOwnedStream) discordOwnedStream.getTracks().forEach(track => track.stop());
+                if (twitchCapture) twitchCapture.stop();
+                if (callMonitor !== null) clearInterval(callMonitor);
+                if (callOwnedStream) callOwnedStream.getTracks().forEach(track => track.stop());
                 if (canvasFrame !== null) cancelAnimationFrame(canvasFrame);
                 const reasonLabel = resolveCleanupReason(reason);
                 debugLog('cleanup:start', {
@@ -9844,7 +9999,7 @@ function setupPublisherFunctions() {
             // Wire end/removal signals
             try {
                 // Track-level ended: only hard stop on audio; for video, allow a short grace window for replacement
-                if (!discordCapture) stream.getTracks().forEach(t => {
+                if (!callCapture && !twitchCapture) stream.getTracks().forEach(t => {
                     debugLog('streamTrack:monitor', { streamId, videoId, track: { kind: t.kind, id: t.id, readyState: t.readyState } });
                     if (t.kind === 'audio') {
                         t.addEventListener('ended', () => {
@@ -9877,10 +10032,10 @@ function setupPublisherFunctions() {
                     }
                 });
                 // Video element lifecycle
-                if (!discordCapture) attachVideoElementListeners(video);
+                if (!callCapture && !twitchCapture) attachVideoElementListeners(video);
                 // Detect DOM removal
                 domObserver = new MutationObserver((records) => {
-                    if (discordCapture) return;
+                    if (callCapture || twitchCapture) return;
                     const stillConnected = video.isConnected || document.contains(video);
                     debugLog('domObserver:mutation', {
                         streamId,
@@ -10081,7 +10236,7 @@ function setupPublisherFunctions() {
                     try { streamSource.addEventListener('removetrack', onBaseStreamRemoveTrack); } catch (e) {}
                 };
 
-                if (!discordCapture) attachBaseStreamListeners(baseVideoStream);
+                if (!callCapture && !twitchCapture) attachBaseStreamListeners(baseVideoStream);
             } catch (e) {}
 
             // Store
@@ -10097,16 +10252,33 @@ function setupPublisherFunctions() {
                 allowSourceTrackStop
             });
 
-            if (discordCapture) {
+            if (twitchCapture) {
+                const rec = window.vdoPublishers[streamId];
+                domObserver.disconnect();
+                twitchCapture.bind(async (kind, current, replacement) => {
+                    if (kind === 'audio' && rec.audioContext && rec.audioDestination) {
+                        if (rec.videoAudioSource) rec.videoAudioSource.disconnect();
+                        rec.videoAudioSource = rec.audioContext.createMediaStreamSource(new MediaStream([replacement]));
+                        rec.videoAudioSource.connect(rec.audioDestination);
+                    } else {
+                        if (current) await vdo.replaceTrack(current, replacement);
+                        else await vdo.addTrack(replacement, rec.stream);
+                        if (current) rec.stream.removeTrack(current);
+                        rec.stream.addTrack(replacement);
+                    }
+                });
+            }
+
+            if (callCapture) {
                 const rec = window.vdoPublishers[streamId];
                 let sourceVideoTrack = baseVideoStream.getVideoTracks()[0] || null;
                 let sourceAudioTrack = baseVideoStream.getAudioTracks()[0] || null;
                 let restoring = false;
-                async function restoreDiscordSource() {
+                async function restoreCallSource() {
                     if (cleaned || restoring) return;
                     restoring = true;
                     try {
-                        const candidate = findDiscordVideo(videoId);
+                        const candidate = findCallVideo(videoId);
                         if (!candidate) return;
                         let source = candidate.srcObject;
                         if (!(source instanceof MediaStream)) {
@@ -10148,17 +10320,17 @@ function setupPublisherFunctions() {
                         video = candidate;
                         baseVideoStream = source;
                     } catch (error) {
-                        debugLog('discordRestore:failed', { streamId, videoId, error: error.message });
+                        debugLog('callRestore:failed', { streamId, videoId, error: error.message });
                     } finally {
                         restoring = false;
                     }
                 }
                 domObserver.disconnect();
-                domObserver = new MutationObserver(restoreDiscordSource);
+                domObserver = new MutationObserver(restoreCallSource);
                 domObserver.observe(document.documentElement, { childList: true, subtree: true });
                 // Assigning srcObject does not produce a DOM mutation.
-                discordMonitor = setInterval(restoreDiscordSource, 1000);
-                restoreDiscordSource();
+                callMonitor = setInterval(restoreCallSource, 1000);
+                restoreCallSource();
             }
             
             // (Label metadata broadcast intentionally omitted; handled externally)
@@ -10168,8 +10340,9 @@ function setupPublisherFunctions() {
             
         } catch (error) {
             console.error('Publish error:', error);
-            if (discordMonitor !== null) clearInterval(discordMonitor);
-            if (discordOwnedStream) discordOwnedStream.getTracks().forEach(track => track.stop());
+            if (twitchCapture) twitchCapture.stop();
+            if (callMonitor !== null) clearInterval(callMonitor);
+            if (callOwnedStream) callOwnedStream.getTracks().forEach(track => track.stop());
             if (canvasFrame !== null) cancelAnimationFrame(canvasFrame);
             try { if (vdo) await vdo.disconnect(); } catch (e) {}
             try { if (allowSourceTrackStop) stream?.getTracks().forEach(track => track.stop()); } catch (e) {}

@@ -1,80 +1,51 @@
-# Chrome Web Store Privacy Practice Justifications
+# Chrome Web Store Permission Justifications
 
-## Single Purpose Description
-This extension integrates with VDO.Ninja to enable peer-to-peer video streaming using WebRTC technology. It operates exclusively on VDO.Ninja domains to facilitate video streaming functionality, allowing users to establish P2P connections for video sharing without any server-side video processing.
+## Single Purpose
 
-## Permission Justifications
+Capture a user-selected video or browser tab and publish it to viewers through VDO.Ninja using WebRTC. Users choose what to publish, configure the connection, share viewer links, and stop their streams from the extension. An optional microphone can be mixed into an individual video capture when the user selects it and grants browser permission.
+
+## Permissions
 
 ### activeTab
-**Justification:** Required to detect and capture video elements on the currently active tab. The extension needs to access the DOM to find video elements and create MediaStream captures when the user explicitly clicks the extension and chooses to stream a video.
 
-### Host Permissions (https://vdo.ninja/*, https://*.vdo.ninja/*)
-**Justification:** Required to inject content scripts specifically on VDO.Ninja pages to enable video streaming functionality. The extension only operates within the VDO.Ninja platform, ensuring minimal permission scope and enhanced user privacy. This targeted approach limits the extension's access to only the necessary domain where the WebRTC streaming functionality is needed.
+Access the tab the user invokes the extension on for video selection and capture actions.
 
-### Content Scripts (NOT Remote Code)
-**Note:** This extension does NOT use remote code. All JavaScript files are bundled locally within the extension package.
+### Host permissions: `<all_urls>`
 
-**Justification:** The extension uses content scripts (combined-vdo-scripts.js and content.js) that run in the isolated content script context on VDO.Ninja pages. These scripts enable WebRTC peer connections and video streaming functionality while maintaining proper security boundaries. All scripts are packaged within the extension and operate only on the specified VDO.Ninja domains.
+Detect and capture video elements on the websites users choose, including video sites, meeting pages, and embedded frames. The extension captures videos from those websites and sends them through VDO.Ninja; it is not limited to pages hosted on VDO.Ninja. Browser restrictions still apply to protected pages and protected media.
 
-### Scripting
-**Justification:** Required to inject content scripts that:
-1. Detect video elements on the page
-2. Capture video streams using the MediaStream API
-3. Initialize the VDO.Ninja SDK in the page context for P2P streaming
-The extension cannot function without the ability to interact with page content.
+### scripting
 
-### Storage
-**Justification:** Used to persist:
-1. Active streaming sessions across popup closures
-2. User's quality settings and preferences (bitrate, codec, etc.)
-3. Stream metadata (titles, IDs, timestamps)
-This ensures users don't lose their active streams when closing the popup and can maintain their preferred settings.
+Run the extension's packaged capture functions in the selected tab and its frames to detect videos, produce thumbnails, and start or stop individual video publishers.
 
-### Tabs
-**Justification:** Required to:
-1. Capture entire tab content when users choose "Tab Capture" option
-2. Query and interact with tabs to detect videos
-3. Open VDO.Ninja links in new tabs when users click stream links
-4. Access tab information (title, URL) for stream identification
+### storage
 
-## Data Usage Declaration
+Save quality and connection settings and active-stream information in the browser. Local storage retains preferences across popup closures; session storage retains publisher bookkeeping while the background worker is suspended. This information supports stream controls and viewer links.
 
-### Data Collection
-- **No personal data is collected or transmitted to external servers**
-- Video streams are transmitted peer-to-peer directly between users
-- Stream IDs are randomly generated locally
-- No analytics or tracking
+### tabs
 
-### Data Storage
-- Only stores locally:
-  - Active stream session data
-  - User preferences (quality settings)
-  - All data remains on the user's device
+Identify source tabs, read their titles and URLs for stream selection and labels, route capture controls to the correct tab, and clean up captures when a source tab closes.
 
-### Data Sharing
-- **No data is shared with third parties**
-- Video streams use peer-to-peer WebRTC connections
-- Optional TURN servers (if configured) only relay encrypted traffic
-- No video content passes through VDO.Ninja servers
+### tabCapture
 
-## Privacy Practices Certification
+Obtain the video and audio of the selected browser tab when the user chooses whole-tab capture. This is separate from capturing an individual video element.
 
-This extension:
-- ✅ Does not collect or transmit personal information
-- ✅ Uses permissions only for stated functionality
-- ✅ Implements peer-to-peer streaming without server-side processing
-- ✅ Stores data locally only
-- ✅ Does not include analytics or tracking
-- ✅ Does not sell or share user data
-- ✅ Complies with Chrome Web Store Developer Program Policies
+### offscreen
 
-## Additional Notes
+Run the packaged offscreen document that obtains the tab-capture MediaStream and maintains its WebRTC publisher after the popup closes. The Manifest V3 background worker cannot host those media APIs itself.
 
-- All video streaming is peer-to-peer using WebRTC
-- VDO.Ninja is an open-source project focused on privacy
-- No account creation or login required
-- Users have full control over when streaming starts/stops
-- Extension only activates upon explicit user interaction
-- Extension operates exclusively on VDO.Ninja domains (https://vdo.ninja and subdomains)
-- Minimal permission scope ensures enhanced user privacy and security
-- No tracking, analytics, or data collection outside of VDO.Ninja platform
+## Packaged Code
+
+The content scripts, popup, background worker, offscreen document, and VDO.Ninja SDK are included in the extension package. The extension does not download JavaScript for execution. Network requests used to establish streams exchange signaling and relay configuration data.
+
+Content scripts load on matching websites, but media publishing starts only when the user starts a capture. The extension does not automatically publish the videos it detects.
+
+## Data Use
+
+- Selected video, tab audio, and optional microphone audio are transmitted to connected viewers when the user publishes a stream.
+- Stream and room identifiers, labels, and WebRTC connection information are used to establish and manage connections through the selected signaling service.
+- Media travels directly between peers when possible. TURN servers can relay encrypted media when a direct connection is unavailable.
+- Peer connections and network services can receive IP addresses and connection metadata needed for WebRTC. Viewer links and room settings determine how viewers connect.
+- Preferences and active-stream information are stored in the browser. The extension does not include analytics, advertising trackers, or an account system.
+
+See the [privacy policy](https://extension.vdo.ninja/privacy.html) for service information and user responsibilities.

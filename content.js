@@ -21,7 +21,10 @@ function discordVideoIdentity(video) {
         }
         if (video.srcObject.id) media.push('stream:' + video.srcObject.id);
     }
-    let tile = null;
+    // Discord puts the participant ID one level above the labelled overlay.
+    // Bound all metadata searches to that tile, including while its label is absent.
+    const sourceTile = video.closest('[data-selenium-video-tile]');
+    let tile = sourceTile;
     let label = '';
     // Labels may be on a sibling overlay. Never walk into a different tile.
     for (let node = video; node && node !== document.body; node = node.parentElement) {
@@ -29,15 +32,17 @@ function discordVideoIdentity(video) {
         const labelled = [node, ...node.querySelectorAll('[aria-label]')].find(element =>
             /^Call tile,\s*\S/i.test(element.getAttribute('aria-label') || ''));
         if (labelled) {
-            tile = node;
+            if (!tile) tile = node;
             label = labelled.getAttribute('aria-label').trim();
             break;
         }
+        if (node === sourceTile) break;
     }
     let owner = '';
     if (tile) {
+        owner = sourceTile ? sourceTile.getAttribute('data-selenium-video-tile') || '' : '';
         const user = tile.closest('[data-user-id]') || tile.querySelector('[data-user-id]');
-        if (user) owner = user.getAttribute('data-user-id') || '';
+        if (!owner && user) owner = user.getAttribute('data-user-id') || '';
         if (!owner) {
             for (const image of tile.querySelectorAll('img[src]')) {
                 try {
@@ -54,22 +59,36 @@ function discordVideoIdentity(video) {
     // Keep a participant's camera separate from their shared screen.
     const role = label ? (/,\s*stream(?:,|$)/i.test(label) ? 'screen' : 'camera') : '';
     const scope = window.location.pathname;
-    return { media, owner: owner ? scope + ':' + owner + ':' + role : '',
+    return { media, owner: owner && role ? scope + ':' + owner + ':' + role : '',
+        participant: owner ? scope + ':' + owner : '',
         tile: label ? scope + ':' + label : '', role, scope };
 }
 
 function discordIdentitiesConflict(left, right) {
     return left.scope !== right.scope || !!(left.role && right.role && left.role !== right.role) ||
+        !!(left.participant && right.participant && left.participant !== right.participant) ||
         !!(left.owner && right.owner && left.owner !== right.owner);
 }
 
 function updateDiscordVideoIds(videos) {
-    const items = Array.from(videos, video => ({ video, identity: discordVideoIdentity(video) }));
+    const items = Array.from(videos, video => {
+        const rect = video.getBoundingClientRect();
+        const live = video.srcObject instanceof MediaStream ?
+            video.srcObject.getVideoTracks().some(track => track.readyState === 'live') : video.readyState >= 2;
+        return { video, identity: discordVideoIdentity(video),
+            priority: (live ? 2 : 0) + (rect.width > 0 && rect.height > 0 ? 1 : 0) };
+    });
     const assigned = new Set();
     // Preserve known elements first so a newly inserted tile cannot steal an ID.
     for (const item of items) {
         const id = discordVideoIds.get(item.video);
         const record = discordSources.get(id);
+        if (record && record.identity.role && !item.identity.role && item.identity.media.length &&
+            !record.identity.media.some(key => item.identity.media.includes(key))) {
+            // The same element can switch between a camera and a screen share.
+            item.waitForRole = true;
+            continue;
+        }
         if (record && (!record.video || record.video === item.video) && !assigned.has(record) &&
             !discordIdentitiesConflict(record.identity, item.identity) &&
             !(!record.identity.tile && !record.identity.owner && record.identity.media.length &&
@@ -81,7 +100,7 @@ function updateDiscordVideoIds(videos) {
         }
     }
     for (const item of items) {
-        if (item.record) continue;
+        if (item.record || item.waitForRole) continue;
         // Only reuse an unambiguous source. Track labels and tile positions are
         // not identities; two people can have the same camera or display name.
         for (const kind of ['media', 'owner', 'tile']) {
@@ -104,21 +123,35 @@ function updateDiscordVideoIds(videos) {
             if (matches.size > 1) break;
         }
         if (!item.record) {
+            // A rebuilt tile may receive its label after its video. Wait for
+            // camera/screen identity instead of allocating a replacement ID.
+            if (item.identity.participant && !item.identity.role &&
+                [...discordSources.values()].some(record => record.identity.participant === item.identity.participant)) continue;
             const id = 'video-' + crypto.randomUUID();
             item.record = { id, identity: item.identity, video: item.video };
             discordSources.set(id, item.record);
             assigned.add(item.record);
         }
     }
-    for (const { video, identity, record } of items) {
+    const selected = new Map();
+    for (const item of items) {
+        const { video, record } = item;
+        if (!record) continue;
+        const previous = selected.get(record);
+        // Fullscreen and grid copies can overlap. Prefer live, visible media
+        // instead of letting a hidden or ended copy win by DOM order.
+        if (!previous || item.priority >= previous.priority) selected.set(record, item);
+        discordVideoIds.set(video, record.id);
+        if (video.dataset.vdoCaptureId !== record.id) video.dataset.vdoCaptureId = record.id;
+    }
+    for (const { video, identity, record } of selected.values()) {
         // Rendering transitions may temporarily omit the tile overlay/avatar.
+        if (!identity.participant) identity.participant = record.identity.participant;
         if (!identity.owner) identity.owner = record.identity.owner;
         if (!identity.tile) identity.tile = record.identity.tile;
         if (!identity.role) identity.role = record.identity.role;
         record.identity = identity;
         record.video = video;
-        discordVideoIds.set(video, record.id);
-        if (video.dataset.vdoCaptureId !== record.id) video.dataset.vdoCaptureId = record.id;
     }
     for (const record of discordSources.values()) {
         if (!assigned.has(record)) record.video = null;
@@ -140,6 +173,74 @@ function findDiscordVideo(videoId) {
     return record.video;
 }
 
+// These call pages expose source IDs independent of their current tile layout.
+// Do not use display names or the shared "remote video" track label as identity.
+const callVideoSources = new Map();
+
+function callVideoSourceKey(video) {
+    const host = window.location.hostname;
+    if (/(^|\.)vdo\.ninja$/.test(host)) {
+        const sid = video.getAttribute('data-sid');
+        return sid ? 'vdo:' + sid : '';
+    }
+    if (host === 'meet.google.com') {
+        const tile = video.closest('[data-participant-id][data-tile-media-id]');
+        if (!tile) return '';
+        const participant = tile.getAttribute('data-participant-id');
+        const media = tile.getAttribute('data-tile-media-id');
+        // Meet gives the presentation and camera separate media identities.
+        return participant && media ? JSON.stringify(['meet', window.location.pathname, participant, media]) : '';
+    }
+    if (!/^(teams\.live\.com|teams\.microsoft\.com|teams\.cloud\.microsoft)$/.test(host)) return '';
+    const tile = video.closest('[data-cid="calling-participant-stream"][data-stream-type]');
+    const stream = video.srcObject;
+    if (!tile || !(stream instanceof MediaStream)) return '';
+    const track = stream.getVideoTracks()[0];
+    if (!track || !track.id || !stream.id) return '';
+    // Include both media IDs and the role: a camera and a share are separate
+    // sources, even when they belong to the same participant.
+    return JSON.stringify(['teams', tile.getAttribute('data-stream-type'), stream.id, track.id]);
+}
+
+function updateCallVideoIds(videos) {
+    for (const record of callVideoSources.values()) record.video = null;
+    for (const video of videos) {
+        const key = callVideoSourceKey(video);
+        if (!key) continue;
+        let record = callVideoSources.get(key);
+        if (!record) {
+            record = { id: 'video-' + crypto.randomUUID(), video: null };
+            callVideoSources.set(key, record);
+        }
+        video.dataset.vdoCaptureId = record.id;
+        // A layout transition can briefly contain two copies of one source.
+        const rect = video.getBoundingClientRect();
+        const live = video.srcObject instanceof MediaStream &&
+            video.srcObject.getVideoTracks().some(track => track.readyState === 'live');
+        const priority = (live ? 2 : 0) + (rect.width > 0 && rect.height > 0 ? 1 : 0);
+        if (!record.video || priority > record.priority) {
+            record.video = video;
+            record.priority = priority;
+        }
+    }
+    if (callVideoSources.size > 256) {
+        const active = new Set(Object.values(window.vdoPublishers || {}).map(record => record.videoId));
+        for (const [key, record] of callVideoSources) {
+            if (!record.video && !active.has(record.id)) callVideoSources.delete(key);
+            if (callVideoSources.size <= 256) break;
+        }
+    }
+}
+
+function findCallVideo(videoId) {
+    if (isDiscordVideoPage()) return findDiscordVideo(videoId);
+    updateCallVideoIds(document.querySelectorAll('video'));
+    for (const record of callVideoSources.values()) {
+        if (record.id === videoId) return record.video;
+    }
+    return null;
+}
+
 // Only initialize when extension is actually used
 function initialize() {
     if (isInitialized) return;
@@ -151,10 +252,13 @@ function detectVideos() {
     const videos = document.querySelectorAll('video');
     const discord = isDiscordVideoPage();
     if (discord) updateDiscordVideoIds(videos);
+    else updateCallVideoIds(videos);
     const videoData = [];
     
     videos.forEach((video, index) => {
         if (discord && discordSources.get(video.dataset.vdoCaptureId)?.video !== video) return;
+        const callKey = !discord && callVideoSourceKey(video);
+        if (callKey && callVideoSources.get(callKey)?.video !== video) return;
         const rect = video.getBoundingClientRect();
         const hasSrc = !!(video.currentSrc || video.src || video.srcObject);
         const isRenderable = video.readyState >= 2 || hasSrc || (rect.width > 0 && rect.height > 0);
